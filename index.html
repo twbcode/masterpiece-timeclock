@@ -345,6 +345,39 @@ details.acc[open] .acc-chev { transform: rotate(90deg); }
 .steps-list { margin: 0; padding-left: 22px; display: grid; gap: 8px; }
 .steps-list li { padding-left: 4px; }
 
+/* summaries */
+.on-pick { border-color: var(--accent) !important; background: var(--accent-soft) !important; color: var(--accent) !important; }
+.report { color: #111; }
+.rp-page { display: grid; gap: 14px; }
+.rp-break { margin-top: 36px; padding-top: 28px; border-top: 2px solid var(--line); }
+.rp-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; border-bottom: 2px solid #111; padding-bottom: 12px; }
+.rp-head.small { border-bottom-width: 1px; }
+.rp-logo { height: 52px; width: auto; }
+.rp-head h1 { font-size: 24px; margin: 0; }
+.rp-head p { margin: 0; color: #444; }
+.rp-meta { margin-left: auto; display: grid; text-align: right; font-size: 13px; color: #444; }
+.rp-meta b { font-size: 15px; color: #111; }
+.rs-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+.rs { border: 1px solid #ccc; border-radius: 8px; padding: 8px 10px; display: grid; }
+.rs span { font-size: 11.5px; color: #555; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
+.rs b { font-size: 19px; font-variant-numeric: tabular-nums; }
+.rp-h { font-size: 16px; margin: 6px 0 0; }
+.rp-t { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.rp-t th, .rp-t td { border: 1px solid #bbb; padding: 5px 7px; text-align: left; vertical-align: top; }
+.rp-t th { background: #f0f0f0; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
+.rp-t .num { text-align: right; white-space: nowrap; }
+.rp-t tfoot td { background: #f6f6f6; font-weight: 700; }
+.rp-sub { font-size: 11.5px; color: #555; }
+.rp-notes { margin: 0; padding-left: 20px; font-size: 13px; display: grid; gap: 3px; }
+.rp-week { break-inside: avoid; page-break-inside: avoid; }
+.rp-week h3 { font-size: 13.5px; margin: 10px 0 4px; }
+.card.report { overflow-x: auto; }
+@media print {
+  .rp-break { page-break-before: always; break-before: page; margin-top: 0; padding-top: 0; border-top: none; }
+  .report .rp-t { font-size: 10.5px; }
+  .card.report { overflow: visible; }
+}
+
 </style>
 
 <header class="bar">
@@ -373,10 +406,359 @@ details.acc[open] .acc-chev { transform: rotate(90deg); }
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
 <script>
+/* ================================================================================================
+   Masterpiece Time Clock: the private server.
+   The same code runs in two places:
+     - Google Apps Script (the real thing), with records kept in a Google Sheet in the owner's account;
+     - the browser preview and the automated tests, with records kept in the browser.
+   It decides who may read and change what. Passwords are checked here, never on the computer.
+   ================================================================================================ */
+var MPC_SERVER_VERSION = 1;
+
+/* ---------- SHA-256 (plain JavaScript, so it gives the same answer everywhere) ---------- */
+function mpcSha256(ascii) {
+  var utf8 = unescape(encodeURIComponent(ascii));
+  var K = [], H = [], isComposite = {}, i, j;
+  for (var c = 2, n = 0; n < 64; c++) {
+    if (!isComposite[c]) {
+      for (i = 0; i < 313; i += c) isComposite[i] = c;
+      if (n < 8) H[n] = (Math.pow(c, .5) * 4294967296) | 0;
+      K[n++] = (Math.pow(c, 1 / 3) * 4294967296) | 0;
+    }
+  }
+  var words = [], bitLen = utf8.length * 8;
+  utf8 += "\x80";
+  while (utf8.length % 64 - 56) utf8 += "\x00";
+  for (i = 0; i < utf8.length; i++) words[i >> 2] |= utf8.charCodeAt(i) << ((3 - i) % 4) * 8;
+  words[words.length] = (bitLen / 4294967296) | 0;
+  words[words.length] = bitLen;
+  var rot = function (v, a) { return (v >>> a) | (v << (32 - a)); };
+  for (j = 0; j < words.length;) {
+    var w = words.slice(j, j += 16), old = H.slice(0, 8);
+    for (i = 0; i < 64; i++) {
+      var w15 = w[i - 15], w2 = w[i - 2], a = H[0], e = H[4];
+      var t1 = H[7] + (rot(e, 6) ^ rot(e, 11) ^ rot(e, 25)) + ((e & H[5]) ^ (~e & H[6])) + K[i] +
+        (w[i] = i < 16 ? w[i] : (w[i - 16] + (rot(w15, 7) ^ rot(w15, 18) ^ (w15 >>> 3)) + w[i - 7] + (rot(w2, 17) ^ rot(w2, 19) ^ (w2 >>> 10))) | 0);
+      var t2 = (rot(a, 2) ^ rot(a, 13) ^ rot(a, 22)) + ((a & H[1]) ^ (a & H[2]) ^ (H[1] & H[2]));
+      H = [(t1 + t2) | 0].concat(H); H[4] = (H[4] + t1) | 0; H.length = 8;
+    }
+    for (i = 0; i < 8; i++) H[i] = (H[i] + old[i]) | 0;
+  }
+  var out = "";
+  for (i = 0; i < 8; i++) for (j = 3; j + 1; j--) { var b = (H[i] >> (j * 8)) & 255; out += (b < 16 ? "0" : "") + b.toString(16); }
+  return out;
+}
+
+/* env: { now(), rand(nBytes) -> hex, cacheGet(k), cachePut(k, v, seconds), cacheDel(k) }
+   store: { all() -> [{path, data, seq}], get(path) -> {path,data,seq}|null, put(path, dataString) -> seq, del(path) } */
+function MpcServer(store, env) {
+  var PW_ROUNDS = 1500;
+  var SESSION_SECONDS = 4 * 3600;
+
+  function hashPw(pw, salt) { var h = salt + ":" + pw; for (var i = 0; i < PW_ROUNDS; i++) h = mpcSha256(salt + h); return h; }
+  function obj(path) { var r = store.get(path); if (!r) return null; try { return JSON.parse(r.data); } catch (e) { return null; } }
+  function save(path, o) { return store.put(path, JSON.stringify(o)); }
+  function fail(msg, code) { var e = new Error(msg); e.code = code || "bad"; throw e; }
+  function id() { return env.rand(6); }
+  function weekOf(t, tz) { // Monday of the week, as YYYY-MM-DD, in the office's local time
+    var d = new Date(t - (tz || 0) * 60000); var dow = (d.getUTCDay() + 6) % 7;
+    var m = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - dow));
+    return m.getUTCFullYear() + "-" + ("0" + (m.getUTCMonth() + 1)).slice(-2) + "-" + ("0" + m.getUTCDate()).slice(-2);
+  }
+  function dayOf(t, tz) { var d = new Date(t - (tz || 0) * 60000); return d.getUTCFullYear() + "-" + (d.getUTCMonth() + 1) + "-" + d.getUTCDate(); }
+  function config() { return obj("sys/config") || {}; }
+  function employees() { return store.all().filter(function (r) { return /^employees\/[^/]+\.json$/.test(r.path); }).map(function (r) { return JSON.parse(r.data); }); }
+  function emp(eid) { return obj("employees/" + eid + ".json"); }
+  function pub(e) { return e && { id: e.id, first: e.first, last: e.last, position: e.position, admin: !!e.admin, hourly: e.hourly !== false, active: e.active !== false }; }
+
+  /* ---------- devices (each computer or phone that may use the time clock) ---------- */
+  function device(req) {
+    if (!req.dev || !req.dev.id) return null;
+    var d = obj("devices/" + req.dev.id + ".json"); var s = obj("auth/device-" + req.dev.id);
+    if (!d || !s || s.hash !== mpcSha256("dev:" + req.dev.secret)) return null;
+    return d;
+  }
+  function needDevice(req) {
+    var d = device(req); if (!d) fail("This computer isn't connected to the time clock. Open your invite email on it.", "nodevice");
+    if (d.status !== "allowed") fail("This computer is waiting for the manager to allow it.", "pending");
+    return d;
+  }
+  function newDevice(label, status, empId) {
+    var did = id() + id(), secret = env.rand(24);
+    save("devices/" + did + ".json", { id: did, label: String(label || "Computer").slice(0, 80), status: status, emp: empId || null, created: env.now() });
+    save("auth/device-" + did, { hash: mpcSha256("dev:" + secret) });
+    return { id: did, secret: secret };
+  }
+
+  /* ---------- sessions (who is signed in) ---------- */
+  function session(req, managerOnly) {
+    var d = needDevice(req);
+    var s = req.tok && env.cacheGet("s:" + req.tok); if (!s) fail("You were signed out. Please sign in again.", "signedout");
+    s = JSON.parse(s); var e = emp(s.emp);
+    if (!e || e.active === false) fail("This account isn't active.", "signedout");
+    if (d.emp && d.emp !== e.id) fail("This phone belongs to someone else.", "denied");
+    if (managerOnly && !e.admin) fail("Only a manager can do that.", "denied");
+    env.cachePut("s:" + req.tok, JSON.stringify(s), SESSION_SECONDS);
+    return { emp: e, dev: d, admin: !!e.admin };
+  }
+
+  /* ---------- who may read what ---------- */
+  function canRead(u, path, data) {
+    if (/^(auth|sys)\//.test(path)) return false;
+    if (u.admin) return true;
+    var me = u.emp.id;
+    if (path === "settings.json" || /^employees\//.test(path)) return true;
+    var m;
+    if ((m = /^events\/[^/]+\/([^/]+)\//.exec(path))) return m[1] === me || m[1] === "_week";
+    if ((m = /^(balances|notes)\/([^/]+)\//.exec(path))) return m[2] === me;
+    if (/^requests\//.test(path)) { try { return JSON.parse(data).emp === me; } catch (e) { return false; } }
+    return false;
+  }
+  function cleanRow(r) {
+    if (/^settings\.json$/.test(r.path)) { var o = JSON.parse(r.data); delete o.recovery; return { path: r.path, data: JSON.stringify(o), seq: r.seq }; }
+    return { path: r.path, data: r.data, seq: r.seq };
+  }
+
+  /* ---------- who may change what ---------- */
+  function checkWrite(u, path, o, existing, req) {
+    if (/^(auth|sys|devices|invites)\//.test(path)) fail("That can't be changed this way.", "denied");
+    if (u.admin) {
+      if (path === "settings.json" && existing) { var old = JSON.parse(existing.data); if (old.recovery) o.recovery = old.recovery; }
+      if (/^employees\//.test(path)) { delete o.hash; delete o.salt; }
+      return path;
+    }
+    var me = u.emp.id, m;
+    if ((m = /^events\/([^/]+)\/([^/]+)\/([^/]+)$/.exec(path))) {
+      if (m[2] !== me || existing) fail("You can only add to your own time card.", "denied");
+      if (o.type === "punch" && o.how === "clock" && (o.dir === "in" || o.dir === "out")) {          // the server's clock, not the computer's
+        var now = env.now(); o.at = now; o.created = now;
+        return "events/" + weekOf(now, req.tz) + "/" + me + "/" + now + "-" + id() + ".json";
+      }
+      if (o.type === "signoff") return path;
+      fail("Only a manager can change time cards.", "denied");
+    }
+    if ((m = /^requests\/([^/]+)$/.exec(path))) {
+      if (existing || o.emp !== me || o.status !== "pending") fail("Only a manager can decide requests.", "denied");
+      return path;
+    }
+    if ((m = /^notes\/([^/]+)\/([^/]+)$/.exec(path))) {
+      if (m[2] === "read-todos.json") { if (m[1] !== me) fail("That isn't yours.", "denied"); return path; }
+      if (!existing) return path;                               // anyone signed in may send a notification
+      if (m[1] !== me) fail("That isn't yours.", "denied");
+      var prev = JSON.parse(existing.data); prev.read = !!o.read; o.text = prev.text; o.link = prev.link; o.t = prev.t;   // only "read" can change
+      return path;
+    }
+    if (/^change log\//.test(path) && !existing) return path;
+    fail("Only a manager can change that.", "denied");
+  }
+
+  /* ---------- actions ---------- */
+  var A = {};
+  A.hello = function (req) {
+    var d = device(req), c = config();
+    return { ready: !!c.setup, device: d ? { status: d.status, emp: d.emp, label: d.label } : null, hasManager: employees().some(function (e) { return e.admin && e.active !== false; }), version: MPC_SERVER_VERSION };
+  };
+  // The owner's first visit: makes the manager's invite. Works once (or again only while no manager exists yet).
+  A.setup = function (req) {
+    var c = config();
+    if (c.setup && employees().some(function (e) { return e.admin; })) fail("The time clock is already set up.", "denied");
+    var code = env.rand(12);
+    save("invites/" + code, { code: code, role: "manager", phone: false, created: env.now(), used: null });
+    c.setup = c.setup || env.now(); save("sys/config", c);
+    return { code: code };
+  };
+  // Opening an invite link on a computer or phone connects it (office computers wait for the manager to allow them).
+  A.register = function (req) {
+    var inv = obj("invites/" + req.code); if (!inv) fail("This invite link isn't valid. Ask your manager for a new one.", "badinvite");
+    var d = device(req);
+    if (d) return { device: null, status: d.status, invite: { role: inv.role, used: !!inv.used, phone: !!inv.phone, name: inv.name || "" } };
+    var status = (inv.role === "manager" && !inv.used) || inv.phone ? "allowed" : "pending";
+    var dev = newDevice(req.label + (inv.phone ? " (phone)" : ""), status, inv.phone && inv.used ? inv.used : null);
+    if (inv.phone) { var nd = obj("devices/" + dev.id + ".json"); nd.phone = true; save("devices/" + dev.id + ".json", nd); }
+    return { device: dev, status: status, invite: { role: inv.role, used: !!inv.used, phone: !!inv.phone, name: inv.name || "" } };
+  };
+  A.createAccount = function (req) {
+    var d = device(req); if (!d) fail("This computer isn't connected.", "nodevice");
+    var inv = obj("invites/" + req.code); if (!inv) fail("This invite link isn't valid.", "badinvite");
+    if (inv.used) fail("This invite was already used to make an account. Sign in instead.", "used");
+    var first = String(req.first || "").trim(), last = String(req.last || "").trim();
+    if (!first || !last) fail("Type your first and last name.");
+    var pwErr = pwProblem(req.password); if (pwErr) fail(pwErr);
+    if (employees().some(function (e) { return (e.first + " " + e.last).toLowerCase() === (first + " " + last).toLowerCase() && e.active !== false; })) fail("There's already an account with that name.");
+    var isMgr = inv.role === "manager";
+    var e = { id: id() + id(), first: first, last: last, position: String(req.position || (isMgr ? "Office Manager" : "")).trim(), admin: isMgr, hourly: isMgr ? req.hourly !== false : true, active: true, created: env.now(), ptoStart: 0, sickStart: 0 };
+    var salt = env.rand(16);
+    save("employees/" + e.id + ".json", e);
+    save("auth/emp-" + e.id, { salt: salt, hash: hashPw(req.password, salt), mustChange: false });
+    inv.used = e.id; inv.usedAt = env.now(); save("invites/" + inv.code, inv);
+    if (inv.phone) { d.emp = e.id; d.status = "allowed"; save("devices/" + d.id + ".json", d); }
+    if (isMgr && !obj("settings.json")) {
+      var s = req.settings || {}; var recovery = null;
+      if (req.recovery) { var rs = env.rand(16); recovery = { salt: rs, hash: mpcSha256(rs + ":" + String(req.recovery).toUpperCase().replace(/[^A-Z0-9]/g, "")) }; }
+      save("settings.json", { created: env.now(), round: 0, holidays: s.holidays || [], accrual: s.accrual || {}, recovery: recovery });
+    }
+    return { emp: pub(e) };
+  };
+  A.board = function (req) {
+    var d = needDevice(req);
+    var list = employees().filter(function (e) { return e.active !== false && (d.phone ? e.id === d.emp : (!d.emp || e.id === d.emp)); });
+    var now = env.now(), wk = weekOf(now, req.tz), prev = weekOf(now - 7 * 864e5, req.tz);
+    var rows = store.all();
+    return { device: { emp: d.emp, label: d.label, phone: !!d.phone }, people: list.map(function (e) {
+      var evs = rows.filter(function (r) { return r.path.indexOf("events/" + wk + "/" + e.id + "/") === 0 || r.path.indexOf("events/" + prev + "/" + e.id + "/") === 0; })
+        .map(function (r) { var o = JSON.parse(r.data); o.id = r.path.split("/").pop().replace(/\.json$/, ""); return o; });
+      var voided = {}, moved = {};
+      evs.forEach(function (v) { if (v.type === "void") voided[v.target] = 1; if (v.type === "move") moved[v.target] = v.at; });
+      var ps = evs.filter(function (v) { return v.type === "punch" && !voided[v.id]; }).map(function (v) { return { dir: v.dir, at: moved[v.id] != null ? moved[v.id] : v.at }; }).sort(function (a, b) { return a.at - b.at; });
+      var last = ps[ps.length - 1];
+      var unread = rows.filter(function (r) { return r.path.indexOf("notes/" + e.id + "/") === 0 && !/read-todos/.test(r.path) && !JSON.parse(r.data).read; }).length;
+      return Object.assign(pub(e), { inSince: last && last.dir === "in" && dayOf(last.at, req.tz) === dayOf(now, req.tz) ? last.at : null, unread: unread });
+    }) };
+  };
+  A.login = function (req) {
+    var d = needDevice(req);
+    var e = emp(req.emp); if (!e || e.active === false) fail("That account isn't active.");
+    if (d.emp && d.emp !== e.id) fail("This phone belongs to someone else.", "denied");
+    var a = obj("auth/emp-" + e.id);
+    var tries = Number(env.cacheGet("try:" + e.id) || 0);
+    if (tries >= 8) fail("Too many wrong passwords. Wait 10 minutes and try again.", "locked");
+    if (!a || hashPw(String(req.password || ""), a.salt) !== a.hash) { env.cachePut("try:" + e.id, String(tries + 1), 600); fail("That password isn't right. Try again.", "badpw"); }
+    env.cacheDel("try:" + e.id);
+    var tok = env.rand(24);
+    env.cachePut("s:" + tok, JSON.stringify({ emp: e.id, dev: d.id }), SESSION_SECONDS);
+    return { tok: tok, emp: e, mustChange: !!a.mustChange, now: env.now() };
+  };
+  A.logout = function (req) { if (req.tok) env.cacheDel("s:" + req.tok); return {}; };
+  A.changePassword = function (req) {
+    var u = session(req); var a = obj("auth/emp-" + u.emp.id);
+    if (!a.mustChange && hashPw(String(req.old || ""), a.salt) !== a.hash) fail("Your current password isn't right.", "badpw");
+    var err = pwProblem(req.password); if (err) fail(err);
+    var salt = env.rand(16); save("auth/emp-" + u.emp.id, { salt: salt, hash: hashPw(req.password, salt), mustChange: false });
+    return {};
+  };
+  A.resetPassword = function (req) {
+    var u = session(req, true); var e = emp(req.emp); if (!e) fail("Not found.");
+    var temp = String(req.temp || ""); if (temp.length < 6) fail("The temporary password needs at least 6 characters.");
+    var salt = env.rand(16); save("auth/emp-" + e.id, { salt: salt, hash: hashPw(temp, salt), mustChange: true });
+    return {};
+  };
+  A.recover = function (req) {         // a manager who forgot their password uses the recovery code
+    needDevice(req);
+    var s = obj("settings.json"); var e = emp(req.emp);
+    if (!s || !s.recovery || !e || !e.admin) fail("That recovery code isn't right.", "badcode");
+    var code = String(req.code || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (mpcSha256(s.recovery.salt + ":" + code) !== s.recovery.hash) fail("That recovery code isn't right.", "badcode");
+    var err = pwProblem(req.password); if (err) fail(err);
+    var salt = env.rand(16); save("auth/emp-" + e.id, { salt: salt, hash: hashPw(req.password, salt), mustChange: false });
+    return {};
+  };
+  A.setRecovery = function (req) {
+    session(req, true); var s = obj("settings.json") || {};
+    var rs = env.rand(16); s.recovery = { salt: rs, hash: mpcSha256(rs + ":" + String(req.code || "").toUpperCase().replace(/[^A-Z0-9]/g, "")) };
+    save("settings.json", s); return {};
+  };
+  A.addEmployee = function (req) {      // manager adds someone without an invite (temporary password)
+    var u = session(req, true);
+    var e = req.e || {}; var first = String(e.first || "").trim(), last = String(e.last || "").trim();
+    if (!first || !last) fail("Type a first and last name.");
+    var temp = String(req.temp || ""); if (temp.length < 6) fail("The temporary password needs at least 6 characters.");
+    var n = { id: id() + id(), first: first, last: last, position: String(e.position || "").trim(), admin: !!e.admin, hourly: e.hourly !== false, active: true, created: env.now(), ptoStart: 0, sickStart: 0 };
+    var salt = env.rand(16);
+    save("employees/" + n.id + ".json", n); save("auth/emp-" + n.id, { salt: salt, hash: hashPw(temp, salt), mustChange: true });
+    return { emp: n };
+  };
+  A.invite = function (req) {
+    session(req, true);
+    var code = env.rand(12);
+    var inv = { code: code, role: req.role === "manager" ? "manager" : req.role === "device" ? "device" : "employee", phone: !!req.phone, name: String(req.name || "").slice(0, 60), created: env.now(), used: null };
+    if (inv.role === "device") inv.used = "device";
+    save("invites/" + code, inv);
+    return { code: code };
+  };
+  A.devices = function (req) {
+    session(req, true);
+    return { devices: store.all().filter(function (r) { return /^devices\//.test(r.path); }).map(function (r) { return JSON.parse(r.data); }),
+      invites: store.all().filter(function (r) { return /^invites\//.test(r.path); }).map(function (r) { var o = JSON.parse(r.data); return { code: o.code, role: o.role, phone: o.phone, name: o.name, created: o.created, used: o.used }; }) };
+  };
+  A.decideDevice = function (req) {
+    session(req, true); var d = obj("devices/" + req.id + ".json"); if (!d) fail("Not found.");
+    if (req.remove) { store.del("devices/" + d.id + ".json"); store.del("auth/device-" + d.id); return {}; }
+    d.status = req.allow ? "allowed" : "denied"; if (req.label) d.label = String(req.label).slice(0, 80);
+    save("devices/" + d.id + ".json", d); return { device: d };
+  };
+  A.sync = function (req) {
+    var u = session(req); var since = Number(req.since || 0); var top = 0;
+    var rows = store.all().filter(function (r) { if (r.seq > top) top = r.seq; return r.seq > since && canRead(u, r.path, r.data); }).map(cleanRow).map(function (r) {
+      if (!u.admin && /^events\/[^/]+\/_week\//.test(r.path)) { var o = JSON.parse(r.data); delete o.snapshot; r.data = JSON.stringify(o); }   // others' paid hours stay private
+      return r;
+    });
+    return { rows: rows, seq: top, me: u.emp, now: env.now() };
+  };
+  A.put = function (req) {
+    var u = session(req);
+    var path = String(req.path || ""); if (!/^[A-Za-z0-9 _.\-/]+$/.test(path) || path.indexOf("..") >= 0) fail("Bad name.");
+    var o = req.data; if (typeof o !== "object" || o === null) fail("Bad data.");
+    var existing = store.get(path);
+    if (req.mode === "create" && existing) fail("That already exists.", "exists");
+    var finalPath = checkWrite(u, path, o, existing, req);
+    if (finalPath !== path && store.get(finalPath)) fail("Please try again.", "exists");
+    var seq = save(finalPath, o);
+    return { path: finalPath, data: JSON.stringify(o), seq: seq };
+  };
+  A.backup = function (req) {
+    session(req, true);
+    return { rows: store.all().filter(function (r) { return !/^(auth|sys)\//.test(r.path); }).map(cleanRow), made: env.now() };
+  };
+
+  function pwProblem(a) {
+    a = String(a || "");
+    return a.length < 8 ? "The password needs at least 8 characters."
+      : !/[A-Z]/.test(a) ? "The password needs at least one uppercase letter (A–Z)."
+      : !/[a-z]/.test(a) ? "The password needs at least one lowercase letter (a–z)."
+      : !/[^A-Za-z0-9]/.test(a) ? "The password needs at least one special character, like ! # $ or ?." : "";
+  }
+
+  return {
+    handle: function (req) {
+      try {
+        var f = A[req && req.a]; if (!f) fail("Unknown request.");
+        return { ok: true, r: f(req) };
+      } catch (e) { return { ok: false, error: e.message || String(e), code: e.code || "error" }; }
+    },
+    weekOf: weekOf,
+  };
+}
+if (typeof module !== "undefined") module.exports = { MpcServer: MpcServer, mpcSha256: mpcSha256 };
+
+/* In-browser stand-in for the Google Apps Script server: used by the Claude preview and the tests.
+   Same server code, records kept in this browser. */
+function MpcMockServer(ns) {
+  var KEY = "mpc-mock-db-" + (ns || "1");
+  var db; try { db = JSON.parse(localStorage.getItem(KEY) || "null"); } catch (e) { db = null; }
+  db = db || { rows: {}, seq: 0, cache: {} };
+  function persist() { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) {} }
+  var store = {
+    all: function () { return Object.keys(db.rows).map(function (k) { return db.rows[k]; }); },
+    get: function (p) { return db.rows[p] || null; },
+    put: function (p, data) { db.seq++; db.rows[p] = { path: p, data: data, seq: db.seq }; persist(); return db.seq; },
+    del: function (p) { delete db.rows[p]; persist(); },
+  };
+  var env = {
+    now: function () { return Date.now() + (window.__mockSkew || 0); },
+    rand: function (n) { var a = new Uint8Array(n); crypto.getRandomValues(a); return Array.prototype.map.call(a, function (x) { return ("0" + x.toString(16)).slice(-2); }).join(""); },
+    cacheGet: function (k) { var c = db.cache[k]; if (!c || c.exp < Date.now()) return null; return c.v; },
+    cachePut: function (k, v, sec) { db.cache[k] = { v: v, exp: Date.now() + sec * 1000 }; persist(); },
+    cacheDel: function (k) { delete db.cache[k]; persist(); },
+  };
+  var server = MpcServer(store, env);
+  function reload() { try { var x = JSON.parse(localStorage.getItem(KEY) || "null"); if (x) db = x; } catch (e) {} }   // other tabs (other "computers") may have changed it
+  return { call: function (req) { return new Promise(function (res) { setTimeout(function () { reload(); res(JSON.parse(JSON.stringify(server.handle(JSON.parse(JSON.stringify(req)))))); }, 30); }); } };
+}
+
 (() => {
 "use strict";
 /* ================================================================ basics */
-const APP_VERSION = "1.2.2";
+const APP_VERSION = "2.0.0";
 const ROOT_NAME = "Masterpiece Time Clock";
 const SEAL_SALT = "mpc-timeclock-seal-v1";
 const OT_LIMIT = 40;                       // hours worked in a week before overtime
@@ -418,112 +800,73 @@ const fullName = (e) => (e ? (e.first + " " + e.last).trim() : "Someone");
 const initials = (e) => ((e.first || "?")[0] + (e.last || "")[0] || "").toUpperCase();
 const nameOf = (id) => fullName(D.emps.find(e => e.id === id));
 
-/* ================================================================ storage: one shared folder (Google Drive) */
-function idb() {
-  return new Promise((res, rej) => {
-    const q = indexedDB.open("mpc-timeclock", 1);
-    q.onupgradeneeded = () => q.result.createObjectStore("kv");
-    q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
-  });
-}
-async function idbGet(k) { const db = await idb(); return new Promise((res, rej) => { const t = db.transaction("kv").objectStore("kv").get(k); t.onsuccess = () => res(t.result); t.onerror = () => rej(t.error); }); }
-async function idbSet(k, v) { const db = await idb(); return new Promise((res, rej) => { const t = db.transaction("kv", "readwrite").objectStore("kv").put(v, k); t.onsuccess = () => res(); t.onerror = () => rej(t.error); }); }
-
-const Store = { root: null, mode: null, pending: null, canFolder: false };
-async function perm(h, ask) {
-  if (!h.queryPermission) return "granted";
-  let p = await h.queryPermission({ mode: "readwrite" });
-  if (p !== "granted" && ask) p = await h.requestPermission({ mode: "readwrite" });
-  return p;
-}
-async function initStore() {
-  Store.canFolder = typeof window.showDirectoryPicker === "function" && window.top === window && params.get("storage") !== "browser";
-  let saved = null;
-  try { saved = await idbGet("root"); } catch (_) {}
-  if (saved && saved.mode === "folder" && saved.handle && Store.canFolder) {
-    Store.pending = saved.handle;
-    try { if (await perm(saved.handle, false) === "granted") { Store.root = saved.handle; Store.mode = "folder"; return "ready"; } } catch (_) {}
-    return "permission";
+/* ================================================================ storage: the private server */
+/* All records live on the private server (Google Apps Script in the owner's Google account). The program keeps
+   a copy of what the signed-in person may see, and refreshes it every few seconds. Passwords are checked there. */
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch (_) { return null; } };
+const lsSet = (k, v) => { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (_) {} };
+const MOCK = inArtifact || params.has("mock") || params.get("storage") === "browser";
+const CONN_KEY = MOCK ? "mpc-tc-conn-mock-" + (params.get("pc") || "1") : "mpc-tc-conn";
+const Conn = (() => { try { return JSON.parse(lsGet(CONN_KEY) || "null") || {}; } catch (_) { return {}; } })();
+const saveConn = () => lsSet(CONN_KEY, JSON.stringify(Conn));
+let mock = null;
+class ApiError extends Error { constructor(m, code) { super(m); this.code = code; } }
+async function api(a, body = {}) {
+  const req = Object.assign({ a, dev: Conn.dev || null, tok: S.tok || null, tz: new Date().getTimezoneOffset() }, body);
+  let res;
+  if (MOCK) { mock = mock || MpcMockServer(params.get("mock") || "1"); res = await mock.call(req); }
+  else {
+    if (!Conn.url) throw new ApiError("This computer isn't connected to the time clock. Open your invite email on it.", "nodevice");
+    let r;
+    try { r = await fetch(Conn.url, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(req), redirect: "follow" }); }
+    catch (_) { throw new ApiError("The time clock needs an internet connection. Check the internet and try again.", "offline"); }
+    try { res = await r.json(); } catch (_) { throw new ApiError("The time clock server didn't answer properly. Try again in a minute.", "server"); }
   }
-  if (saved && saved.mode === "browser") { try { await useBrowserStorage(); return "ready"; } catch (_) {} }
-  if (!Store.canFolder && (inArtifact || params.get("storage") === "browser")) { await useBrowserStorage(); return "ready"; }
-  return "setup";
-}
-async function chooseFolder() {
-  const picked = await window.showDirectoryPicker({ id: "mpc-timeclock", mode: "readwrite" });
-  const root = picked.name === ROOT_NAME ? picked : await picked.getDirectoryHandle(ROOT_NAME, { create: true });
-  Store.root = root; Store.mode = "folder";
-  await idbSet("root", { mode: "folder", handle: root });
-}
-async function useBrowserStorage() {
-  const o = await navigator.storage.getDirectory();
-  Store.root = await o.getDirectoryHandle(ROOT_NAME, { create: true }); Store.mode = "browser";
-  try { await idbSet("root", { mode: "browser" }); } catch (_) {}
-}
-async function dirAt(parts, create = false) {
-  let d = Store.root;
-  for (const p of parts) {
-    try { d = await d.getDirectoryHandle(p, { create }); }
-    catch (e) { if (!create && e && (e.name === "NotFoundError" || e.name === "TypeError")) return null; throw e; }
+  if (!res.ok) {
+    if (res.code === "signedout" && S.emp) { S.emp = null; S.tok = null; Mirror.clear(); paintBar(); go("home"); toast("You were signed out. Please sign in again."); }
+    throw new ApiError(res.error, res.code);
   }
-  return d;
+  return res.r;
 }
+/* the local copy */
+const Mirror = { rows: new Map(), seq: 0, clear() { this.rows.clear(); this.seq = 0; } };
+let syncing = null;
+async function syncNow() {
+  if (!S.tok) return;
+  if (syncing) return syncing;
+  syncing = (async () => {
+    const r = await api("sync", { since: Mirror.seq });
+    for (const row of r.rows) Mirror.rows.set(row.path, row.data);
+    Mirror.seq = Math.max(Mirror.seq, r.seq);
+    if (r.me && S.emp && r.me.id === S.emp.id) Object.assign(S.emp, r.me);
+  })().finally(() => { syncing = null; });
+  return syncing;
+}
+const under = (parts) => parts.length ? parts.join("/") + "/" : "";
 async function listJson(parts) {
-  const d = await dirAt(parts); if (!d) return [];
-  const out = [];
-  for await (const [n, h] of d.entries()) if (h.kind === "file" && /\.json$/i.test(n)) out.push(n);
+  const pre = under(parts), out = [];
+  for (const k of Mirror.rows.keys()) if (k.startsWith(pre) && !k.slice(pre.length).includes("/") && /\.(json|csv)$/i.test(k)) out.push(k.slice(pre.length));
   return out.sort();
 }
 async function listDirs(parts) {
-  const d = await dirAt(parts); if (!d) return [];
-  const out = [];
-  for await (const [n, h] of d.entries()) if (h.kind === "directory") out.push(n);
-  return out.sort();
+  const pre = under(parts), out = new Set();
+  for (const k of Mirror.rows.keys()) if (k.startsWith(pre)) { const rest = k.slice(pre.length); if (rest.includes("/")) out.add(rest.split("/")[0]); }
+  return [...out].sort();
 }
-
-/* Every record is sealed with a short code made from its contents. A record changed outside the
-   program (for example by editing the file by hand) no longer matches its seal and is flagged. */
-async function sha(s) { const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join(""); }
-const CACHE = new Map();     // records that never change (punches, ledger lines, log lines), by path
-async function readJson(parts, name, cache = false) {
-  const key = parts.join("/") + "/" + name;
-  if (cache && CACHE.has(key)) return CACHE.get(key);
-  const d = await dirAt(parts); if (!d) return null;
-  let text;
-  try { text = await (await (await d.getFileHandle(name)).getFile()).text(); }
-  catch (e) { if (e && (e.name === "NotFoundError" || e.name === "TypeError")) return null; throw e; }
-  let o;
-  try { o = JSON.parse(text); } catch (_) { return { _broken: true, _file: name }; }
-  const seal = o._seal; delete o._seal;
-  o._tampered = !seal || (await sha(SEAL_SALT + JSON.stringify(o))).slice(0, 24) !== seal;
-  if (cache) CACHE.set(key, o);
-  return o;
+async function readJson(parts, name) {
+  const d = Mirror.rows.get(under(parts) + name); if (d == null) return null;
+  try { return Object.assign(JSON.parse(d), { _tampered: false }); } catch (_) { return { _broken: true, _file: name }; }
 }
 async function writeJson(parts, name, obj) {
-  const o = Object.assign({}, obj); delete o._tampered; delete o._seal;
-  const body = JSON.stringify(o);
-  const sealed = body.slice(0, -1) + (body.length > 2 ? "," : "") + '"_seal":"' + (await sha(SEAL_SALT + body)).slice(0, 24) + '"}';
-  const d = await dirAt(parts, true);
-  const w = await (await d.getFileHandle(name, { create: true })).createWritable();
-  await w.write(sealed); await w.close();
-  const key = parts.join("/") + "/" + name;
-  if (CACHE.has(key)) CACHE.set(key, Object.assign({}, o, { _tampered: false }));
+  const o = Object.assign({}, obj); delete o._tampered; delete o._seal; delete o.file;
+  const path = under(parts) + name;
+  const r = await api("put", { path, data: o, mode: Mirror.rows.has(path) ? "update" : "create" });
+  Mirror.rows.set(r.path, r.data);
+  return r.path;
 }
-async function writeText(parts, name, text) {
-  const d = await dirAt(parts, true);
-  const w = await (await d.getFileHandle(name, { create: true })).createWritable();
-  await w.write(text); await w.close();
-}
+async function writeText(parts, name, text) { return writeJson(parts, name, { text }); }
 
-/* ================================================================ passwords */
-const toHex = (b) => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
-async function pwHash(pw, saltHex, iter = 150000) {
-  const salt = new Uint8Array(saltHex.match(/../g).map(h => parseInt(h, 16)));
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveBits"]);
-  return toHex(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: iter }, key, 256));
-}
-async function setPassword(emp, pw) { emp.salt = toHex(crypto.getRandomValues(new Uint8Array(16))); emp.iter = 150000; emp.hash = await pwHash(pw, emp.salt, emp.iter); }
-async function checkPassword(emp, pw) { return !!emp.hash && (await pwHash(pw, emp.salt, emp.iter || 150000)) === emp.hash; }
+/* ================================================================ passwords (checked by the server) */
 function newCode() {
   const A = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; const r = crypto.getRandomValues(new Uint8Array(12));
   return [...r].map(x => A[x % A.length]).join("").replace(/(.{4})(?=.)/g, "$1-");
@@ -554,15 +897,14 @@ const admins = () => active().filter(e => e.admin);
 /* events: one small file per thing that happens, so the 3 computers never write the same file */
 async function weekEvents(wk, empId) {
   const parts = ["events", wk, empId]; const out = [];
-  for (const n of await listJson(parts)) { const o = await readJson(parts, n, true); if (o && !o._broken) out.push(Object.assign({ id: n.replace(/\.json$/, "") }, o)); }
+  for (const n of await listJson(parts)) { const o = await readJson(parts, n); if (o && !o._broken) out.push(Object.assign({ id: n.replace(/\.json$/, "") }, o)); }
   return out.sort((a, b) => (a.created - b.created) || a.id.localeCompare(b.id));
 }
 async function addEvent(wk, empId, ev) {
   const created = Date.now(); const name = created + "-" + rnd() + ".json";
-  const o = Object.assign({ created, by: S.emp ? S.emp.id : "", pc: PC }, ev);
-  await writeJson(["events", wk, empId], name, o);
-  CACHE.set(["events", wk, empId].join("/") + "/" + name, Object.assign({}, o, { _tampered: false }));
-  return name.replace(/\.json$/, "");
+  const o = Object.assign({ created, by: S.emp ? S.emp.id : "" }, ev);
+  const path = await writeJson(["events", wk, empId], name, o);
+  return path.split("/").pop().replace(/\.json$/, "");
 }
 async function logChange(text) {
   const t = Date.now();
@@ -570,12 +912,12 @@ async function logChange(text) {
 }
 async function loadLog(limit = 300) {
   const names = (await listJson(["change log"])).slice(-limit).reverse(); const out = [];
-  for (const n of names) { const o = await readJson(["change log"], n, true); if (o) out.push(o); }
+  for (const n of names) { const o = await readJson(["change log"], n); if (o) out.push(o); }
   return out;
 }
 async function weekMeta(wk) {
   const parts = ["events", wk, "_week"]; const out = [];
-  for (const n of await listJson(parts)) { const o = await readJson(parts, n, true); if (o) out.push(o); }
+  for (const n of await listJson(parts)) { const o = await readJson(parts, n); if (o) out.push(o); }
   out.sort((a, b) => a.created - b.created);
   const last = [...out].reverse().find(e => e.type === "lock" || e.type === "unlock");
   return { locked: !!last && last.type === "lock", lock: last && last.type === "lock" ? last : null, history: out };
@@ -594,7 +936,7 @@ async function saveRequest(r) { await writeJson(["requests"], r.id + ".json", r)
 /* PTO and sick balances: a running list of additions (+) and hours used (-) */
 async function ledger(empId) {
   const out = [];
-  for (const n of await listJson(["balances", empId])) { const o = await readJson(["balances", empId], n, true); if (o) out.push(o); }
+  for (const n of await listJson(["balances", empId])) { const o = await readJson(["balances", empId], n); if (o) out.push(o); }
   return out.sort((a, b) => a.t - b.t);
 }
 async function addLedger(empId, cat, hours, note, ref) {
@@ -723,6 +1065,7 @@ async function saveTodoKeys(empId, set) { await writeJson(["notes", empId], "rea
 async function computeTodos(emp) {
   const out = []; const now = new Date(); const thisWk = weekOf(now);
   if (emp.admin) {
+    try { const dv = await api("devices"); for (const d of dv.devices.filter(x => x.status === "pending")) out.push({ key: "dev:" + d.id, t: d.created, text: "A new computer wants to use the time clock (" + d.label + "). Allow it only if it's an office computer.", link: { v: "manage", tab: "team" } }); } catch (_) {}
     const reqs = (await loadRequests()).filter(r => r.status === "pending" && D.emps.some(e => e.id === r.emp));
     for (const r of reqs) out.push({ key: "req:" + r.id, t: r.created, text: nameOf(r.emp) + " is asking for " + (r.kind === "fix" ? "a missed punch fix, " + fmtDay(r.date) : (CATS[r.kind] || r.kind) + ", " + (r.dates || [r.date]).map(fmtDay).join(", ")) + ". Approve or decline it.", link: { v: "manage", tab: "cards" } });
     const hourly = active().filter(e => e.hourly !== false);
@@ -796,11 +1139,10 @@ $("#bell").addEventListener("click", (e) => {
 });
 document.addEventListener("click", (e) => { if (!$("#bell-panel").hidden && !e.target.closest("#bell-wrap")) closeBell(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#bell-panel").hidden) closeBell(); });
-setInterval(() => { if (S.emp && !dlg.open) refreshBell().catch(() => {}); }, 30000);
+setInterval(() => { if (S.emp && !dlg.open && !document.hidden) syncNow().then(refreshBell).catch(() => {}); }, 30000);
 
 /* ================================================================ session (shared office computers) */
-const S = { emp: null, last: Date.now() };
-let PC = "";
+const S = { emp: null, tok: null, last: Date.now() };
 const touch = () => { S.last = Date.now(); };
 ["pointerdown", "keydown"].forEach(t => document.addEventListener(t, touch, true));
 setInterval(() => {
@@ -809,7 +1151,7 @@ setInterval(() => {
   if (Date.now() - S.last > limit && !$("#dlg").open) { signOut(); toast("Signed out after a few minutes of no activity."); }
 }, 5000);
 function signIn(emp) { S.emp = emp; touch(); paintBar(); refreshBell().catch(() => {}); }
-function signOut() { S.emp = null; paintBar(); go("home"); }
+function signOut() { const t = S.tok; S.emp = null; S.tok = null; Mirror.clear(); paintBar(); if (t) api("logout", { tok: t }).catch(() => {}); go("home"); }
 function paintBar() {
   const w = $("#who"), o = $("#sign-out");
   w.hidden = o.hidden = !S.emp;
@@ -868,44 +1210,92 @@ function go(name, opts = {}) {
   if (dlg.open) dlg.close();
   closeBell(); if (S.emp) refreshBell().catch(() => {});
   window.scrollTo(0, 0);
-  const V = { home: viewHome, signin: viewSignIn, newacct: viewNewAccount, me: viewMe, manage: viewManage, empweek: viewEmpWeek }[name];
+  const V = { home: viewHome, signin: viewSignIn, me: viewMe, manage: viewManage, empweek: viewEmpWeek, report: viewReport }[name];
   Promise.resolve(V(opts)).catch(showError);
 }
 $("#go-home").addEventListener("click", () => { if (D.settings) go(S.emp ? "me" : "home"); });
 $("#sign-out").addEventListener("click", () => signOut());
 
-/* ================================================================ first run */
-function viewChooseFolder() {
-  view().innerHTML = '<div class="narrow" style="max-width:600px"><div class="card">' +
-    '<div class="card-head"><span class="section-title">Set up this computer</span><h2>Choose the shared Google Drive folder</h2>' +
-    '<p class="muted">Time cards are saved in Google Drive so every office computer sees the same ones. The program makes a <b>' + ROOT_NAME + '</b> folder inside the folder you pick.</p></div>' +
-    (Store.canFolder ? '<ol class="steps-list"><li>Click <b>Choose folder</b> below. A folder window opens. That\'s normal: Google Drive shows up inside it.</li>' +
-      '<li>On the left side of that window, click <b>Google Drive</b>.</li>' +
-      '<li>Open <b>My Drive</b> (or <b>Shared drives</b>), click the <b>Masterpiece</b> folder once, then click <b>Select Folder</b>.</li>' +
-      '<li>When the browser asks, click <b>Edit files</b> or <b>Allow</b>.</li></ol>' +
-      '<button class="btn btn-primary btn-lg btn-block" type="button" id="pick">Choose folder</button>' +
-      '<div class="note warn"><b>Don\'t see Google Drive on the left?</b><span>This computer needs the free <b>Google Drive for desktop</b> app, signed in to the Masterpiece Google account. Install it from google.com/drive/download, then come back and click Choose folder.</span></div>' +
-      '<p class="hint">Use the same folder on every office computer.</p>'
-      : '<div class="note warn">Saving to Google Drive needs Chrome or Edge on a computer.</div><button class="btn btn-secondary btn-block" type="button" id="browser">Try it in this browser only</button>') +
-    '</div></div>';
-  if ($("#pick")) $("#pick").addEventListener("click", async () => {
-    try { await chooseFolder(); } catch (e) { if (e && e.name === "AbortError") return; return showError(e); }
-    enterApp();
-  });
-  if ($("#browser")) $("#browser").addEventListener("click", async () => { await useBrowserStorage(); enterApp(); });
+/* ================================================================ first run: connecting a computer or phone */
+const deviceLabel = () => { const u = navigator.userAgent; const os = /iPhone|iPad/.test(u) ? "iPhone" : /Android/.test(u) ? "Android phone" : /Windows/.test(u) ? "Windows computer" : /Mac/.test(u) ? "Mac" : "Computer"; const br = /Edg\//.test(u) ? "Edge" : /Chrome\//.test(u) ? "Chrome" : /Safari\//.test(u) ? "Safari" : /Firefox\//.test(u) ? "Firefox" : "browser"; return os + ", " + br; };
+const joinLink = (code) => (MOCK && !inArtifact ? location.href.split("#")[0] : location.origin + location.pathname.replace(/index\.html$/, "")) + "#join=" + encodeURIComponent(MOCK ? "mock" : Conn.url) + "~" + code;
+function centerCard(inner) { view().innerHTML = '<div class="narrow" style="max-width:600px"><div class="card">' + inner + '</div></div>'; }
+function viewNotConnected(msg) {
+  centerCard('<div class="card-head"><span class="section-title">Not connected yet</span><h2>This ' + (/iPhone|Android/.test(navigator.userAgent) ? "phone" : "computer") + ' isn\'t connected to the time clock</h2>' +
+    '<p class="muted">' + esc(msg || "To connect it, open your time clock invite email on this computer and click the link in it. Don't have one? Ask your manager to send you an invite.") + '</p></div>');
 }
-function viewPermission() {
-  view().innerHTML = '<div class="narrow"><div class="card"><div class="card-head"><h2>Welcome back</h2>' +
-    '<p class="muted">The browser needs your OK to open the <b>' + ROOT_NAME + '</b> folder again.</p></div>' +
-    '<button class="btn btn-primary btn-lg btn-block" type="button" id="grant">Open the time clock</button>' +
-    '<p class="hint">Tip: when the browser asks, choose <b>Allow on every visit</b> so this step goes away.</p>' +
-    '<button class="btn btn-text" type="button" id="other">Use a different folder</button></div></div>';
-  $("#grant").addEventListener("click", async () => {
-    try { if (await perm(Store.pending, true) === "granted") { Store.root = Store.pending; Store.mode = "folder"; return enterApp(); } } catch (e) { return showError(e); }
-  });
-  $("#other").addEventListener("click", viewChooseFolder);
+function viewPending() {
+  centerCard('<div class="card-head"><span class="section-title">Almost there</span><h2>Waiting for the manager to allow this computer</h2>' +
+    '<p class="muted">To keep time cards safe, each new computer has to be allowed once by the manager. They\'ll see it in their notifications. This page checks again on its own.</p></div>' +
+    '<button class="btn btn-secondary" type="button" id="again">Check now</button>');
+  const check = async () => { try { const h = await api("hello"); if (h.device && h.device.status === "allowed") return enterApp(); if (h.device && h.device.status === "denied") viewNotConnected("The manager didn't allow this computer. If that's a mistake, ask them to allow it in Team."); } catch (_) {} };
+  $("#again").addEventListener("click", check);
+  pollT = setInterval(check, 15000);
 }
-
+/* the owner's page: copy the server code, then paste the server's address */
+function viewOwner() {
+  centerCard('<div class="card-head"><span class="section-title">Owner setup</span><h2>Connect the private server</h2>' +
+    '<p class="muted">Do this once, after following the setup steps. It makes the manager\'s link.</p></div>' +
+    '<div class="field"><label>1. The server code</label><div class="row"><button class="btn btn-secondary" type="button" id="copycode">Copy the server code</button><a class="btn btn-text" href="Code.gs.txt" target="_blank" rel="noopener">Open it instead</a></div></div>' +
+    '<div class="field"><label for="surl">2. Paste the Web app address from Google (it ends in /exec)</label><input type="text" id="surl" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></div>' +
+    '<p class="err" id="serr"></p><button class="btn btn-primary btn-lg btn-block" type="button" id="sgo">Connect</button>');
+  $("#copycode").addEventListener("click", async () => {
+    try { const t = await (await fetch("Code.gs.txt", { cache: "no-store" })).text(); await navigator.clipboard.writeText(t); toast("Copied. Paste it into the Apps Script editor."); }
+    catch (_) { toast("Couldn't copy here. Tap Open it instead, then select all and copy."); }
+  });
+  $("#sgo").addEventListener("click", async () => {
+    const url = $("#surl").value.trim();
+    if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(url)) { $("#serr").textContent = "That doesn't look like the Web app address. It starts with https://script.google.com/macros/s/ and ends with /exec."; return; }
+    Conn.url = url; delete Conn.dev; saveConn();
+    try { const h = await api("hello"); if (!h || !h.version) throw new Error(); } catch (e) { $("#serr").textContent = "Couldn't reach the server at that address. Check that it was deployed as a Web app with access for Anyone. (" + (e.message || "no answer") + ")"; return; }
+    viewOwnerSetup();
+  });
+}
+/* the owner's one-time setup: makes the manager's link */
+async function viewOwnerSetup() {
+  try {
+    const r = await api("setup");
+    const link = joinLink(r.code);
+    centerCard('<div class="card-head"><span class="section-title">Server connected</span><h2>Send this link to the manager</h2>' +
+      '<p class="muted">The manager opens it on their office computer to make the manager account and finish setup. It works once.</p></div>' +
+      '<div class="field"><label for="ml">Manager link</label><input type="text" id="ml" readonly value="' + esc(link) + '"></div>' +
+      '<div class="row"><button class="btn btn-primary" type="button" id="share">Share or copy</button><a class="btn btn-secondary" href="mailto:?subject=' + encodeURIComponent("Masterpiece Time Clock: your manager link") + '&body=' + encodeURIComponent("Open this link on your office computer to set up the time clock:\n\n" + link) + '">Email it</a></div>');
+    $("#share").addEventListener("click", async () => { try { if (navigator.share) await navigator.share({ title: "Masterpiece Time Clock", url: link }); else { await navigator.clipboard.writeText(link); toast("Copied."); } } catch (_) {} });
+  } catch (e) { centerCard('<h2>Setup</h2><p class="muted">' + esc(e.message) + '</p>'); }
+}
+/* opening an invite link (manager, employee, phone, or "connect this computer") */
+async function viewJoin(code) {
+  let r;
+  try { r = await api("register", { code, label: deviceLabel() }); }
+  catch (e) { return viewNotConnected(e.message); }
+  if (r.device) { Conn.dev = r.device; saveConn(); }
+  const inv = r.invite;
+  if (inv.used || inv.role === "device") return r.status === "allowed" ? enterApp() : viewPending();
+  if (inv.role === "manager") return viewCreateManager(code);
+  centerCard('<div class="card-head"><span class="section-title">Welcome to Masterpiece</span><h2>Make your time clock account</h2>' +
+    '<p class="muted">' + (inv.phone ? "You'll clock in and out on this phone. " : "") + 'Your name shows on the time clock. Your password keeps your time card private.</p></div>' +
+    '<div class="grid2"><div class="field"><label for="n-first">First name</label><input type="text" id="n-first" autocomplete="given-name" value="' + esc((inv.name || "").split(" ")[0] || "") + '"></div>' +
+    '<div class="field"><label for="n-last">Last name</label><input type="text" id="n-last" autocomplete="family-name" value="' + esc((inv.name || "").split(" ").slice(1).join(" ")) + '"></div></div>' +
+    '<div class="field"><label for="n-pos">Position</label><input type="text" id="n-pos" autocomplete="off"></div>' +
+    '<div class="grid2"><div class="field"><label for="n-pw">Password</label><input type="password" id="n-pw" autocomplete="new-password"></div>' +
+    '<div class="field"><label for="n-pw2">Type it again</label><input type="password" id="n-pw2" autocomplete="new-password"></div></div>' + pwHint +
+    '<p class="err" id="n-err"></p><button class="btn btn-primary btn-lg btn-block" type="button" id="n-go">Make my account</button>');
+  $("#n-go").addEventListener("click", async () => {
+    const first = $("#n-first").value.trim(), last = $("#n-last").value.trim(), position = $("#n-pos").value.trim();
+    const err = !first || !last ? "Type your first and last name." : !position ? "Type your position." : pwProblem($("#n-pw").value, $("#n-pw2").value);
+    if (err) { $("#n-err").textContent = err; return; }
+    const btn = $("#n-go"); btn.disabled = true;
+    try {
+      const made = await api("createAccount", { code, first, last, position, password: $("#n-pw").value });
+      const h = await api("hello");
+      if (h.device.status !== "allowed") { toast("Your account is ready."); return viewPending(); }
+      await signInWith(made.emp.id, $("#n-pw").value);
+      await logChange("New account: " + first + " " + last + " (" + position + ")");
+      await notifyManagers("New account made: " + first + " " + last + " (" + position + "). If you don't know this person, mark them inactive in Team.", { v: "manage", tab: "team" });
+      toast("Welcome, " + first + "! Your account is ready."); go("me");
+    } catch (e) { btn.disabled = false; $("#n-err").textContent = e.message; }
+  });
+}
 /* federal holidays, observed on Friday or Monday when they fall on a weekend */
 function nthDow(y, m, dow, n) { const d = new Date(y, m, 1); const off = (dow - d.getDay() + 7) % 7; return new Date(y, m, 1 + off + 7 * (n - 1)); }
 function lastDow(y, m, dow) { const d = new Date(y, m + 1, 0); return new Date(y, m, d.getDate() - ((d.getDay() - dow + 7) % 7)); }
@@ -939,11 +1329,10 @@ function readChecklist(box, hours) {
   const y = +box.dataset.year; const S0 = suggestedHolidays(y);
   return $$("input[data-hol]:checked:not(:disabled)", box).map(i => { const h = S0.find(x => x.key === i.dataset.hol); return { id: uid(), date: h.date, name: h.name, hours }; });
 }
-function viewCreateManager() {
+function viewCreateManager(code) {
   const y = new Date().getFullYear();
-  view().innerHTML = '<div class="narrow" style="max-width:620px"><div class="card">' +
-    '<div class="card-head"><span class="section-title">One-time setup</span><h2>Set up the time clock</h2>' +
-    '<p class="muted">First, the manager account. The manager approves time off and overtime, fixes time cards, and resets passwords.</p></div>' +
+  centerCard('<div class="card-head"><span class="section-title">One-time setup</span><h2>Set up the time clock</h2>' +
+    '<p class="muted">First, the manager account. The manager approves time off and overtime, fixes time cards, invites employees and allows office computers.</p></div>' +
     '<div class="grid2"><div class="field"><label for="m-first">First name</label><input type="text" id="m-first" autocomplete="off"></div>' +
     '<div class="field"><label for="m-last">Last name</label><input type="text" id="m-last" autocomplete="off"></div></div>' +
     '<div class="field"><label for="m-pos">Position</label><input type="text" id="m-pos" placeholder="Office Manager" autocomplete="off"></div>' +
@@ -951,11 +1340,11 @@ function viewCreateManager() {
     '<div class="grid2"><div class="field"><label for="m-pw">Password</label><input type="password" id="m-pw" autocomplete="new-password"></div>' +
     '<div class="field"><label for="m-pw2">Type it again</label><input type="password" id="m-pw2" autocomplete="new-password"></div></div>' + pwHint +
     '<div class="sep"></div>' +
-    '<div class="card-head"><h3>Paid holidays for ' + y + '</h3><p class="muted">Holidays add hours to everyone\'s time card automatically. Uncheck any the company doesn\'t give. You can add your own later.</p></div>' +
+    '<div class="card-head"><h3>Paid holidays for ' + y + '</h3><p class="muted">Holidays add hours to everyone\'s time card automatically. Uncheck any the company doesn\'t give. You can change these anytime in Settings.</p></div>' +
     '<div class="field" style="max-width:220px"><label for="m-holh">Hours for each holiday</label><input type="number" id="m-holh" value="8" min="0" max="24" step="0.25"></div>' +
     holidayChecklist(y) +
     '<p class="err" id="m-err"></p>' +
-    '<button class="btn btn-primary btn-lg btn-block" type="button" id="m-go">Finish setup</button></div></div>';
+    '<button class="btn btn-primary btn-lg btn-block" type="button" id="m-go">Finish setup</button>');
   $("#m-go").addEventListener("click", async () => {
     const first = $("#m-first").value.trim(), last = $("#m-last").value.trim(), pos = $("#m-pos").value.trim();
     const pw = $("#m-pw").value, pw2 = $("#m-pw2").value;
@@ -963,135 +1352,103 @@ function viewCreateManager() {
     if (err) { $("#m-err").textContent = err; return; }
     const btn = $("#m-go"); btn.disabled = true;
     try {
-      const code = newCode();
-      const emp = { id: uid(), first, last, position: pos || "Office Manager", admin: true, hourly: $("#m-hourly").checked, active: true, created: Date.now(), ptoStart: 0, sickStart: 0 };
-      await setPassword(emp, pw);
-      const salt = toHex(crypto.getRandomValues(new Uint8Array(16)));
-      D.settings = { created: Date.now(), round: 0, holidays: readChecklist($(".hol-list"), Number($("#m-holh").value) || 8), recovery: { salt, hash: await pwHash(code.replace(/-/g, ""), salt) } };
-      await saveSettings(); await saveEmp(emp); await loadEmps();
-      S.emp = emp; await logChange("Set up the time clock"); S.emp = null;
-      await ask({ title: "Write down this recovery code", html: '<p class="muted">If the manager password is ever forgotten, this code is the only way back in. Keep it somewhere safe, away from the computer.</p><div class="code">' + code + '</div>',
+      const rc = newCode();
+      const made = await api("createAccount", { code, first, last, position: pos || "Office Manager", hourly: $("#m-hourly").checked, password: pw, recovery: rc,
+        settings: { holidays: readChecklist($(".hol-list"), Number($("#m-holh").value) || 8) } });
+      await signInWith(made.emp.id, pw);
+      await logChange("Set up the time clock");
+      await ask({ title: "Write down this recovery code", html: '<p class="muted">If the manager password is ever forgotten, this code resets it. Keep it somewhere safe, away from the computer.</p><div class="code">' + rc + '</div>',
         buttons: [{ label: "I wrote it down", value: true, kind: "btn-primary" }] });
-      go("home");
-    } catch (e) { btn.disabled = false; showError(e); }
+      go("manage", { tab: "team" });
+      toast("Next: invite your employees.", 5000);
+    } catch (e) { btn.disabled = false; $("#m-err").textContent = e.message; }
   });
 }
 async function enterApp() {
-  if (!PC) { PC = (await idbGet("pc").catch(() => null)) || ("PC-" + rnd().toUpperCase()); idbSet("pc", PC).catch(() => {}); }
-  await loadSettings();
-  if (!D.settings) return viewCreateManager();
-  await loadEmps();
+  clearInterval(pollT); pollT = null;
+  if (!Conn.dev) return viewNotConnected();
+  let h;
+  try { h = await api("hello"); } catch (e) { return viewNotConnected(e.message); }
+  if (!h.device) { delete Conn.dev; saveConn(); return viewNotConnected(); }
+  if (h.device.status === "pending") return viewPending();
+  if (h.device.status === "denied") return viewNotConnected("The manager didn't allow this computer. If that's a mistake, ask them to allow it in Team.");
   go("home");
 }
 
 /* ================================================================ home: who's clocking in? */
 async function viewHome() {
-  if (S.emp) { S.emp = null; paintBar(); }
+  if (S.emp) { S.emp = null; S.tok = null; Mirror.clear(); paintBar(); }
   const draw = async () => {
-    await loadEmps();
-    const wk = weekOf(new Date());
-    const people = active().filter(e => e.hourly !== false);
-    const weeks = await Promise.all(people.map(e => weekFor(e, wk)));
-    const unread = await Promise.all(people.map(e => loadNotes(e.id).then(n => n.filter(x => !x.read).length).catch(() => 0)));
+    let b;
+    try { b = await api("board"); } catch (e) { if (e.code === "pending") return viewPending(); if (e.code === "nodevice") return viewNotConnected(); throw e; }
     if (current.name !== "home") return;
-    const managers = active().filter(e => e.admin && e.hourly === false);
+    D.board = b.people;
+    if (b.device.phone && b.people.length === 1) return go("signin", { id: b.people[0].id, phone: true });
     const now = new Date();
     view().innerHTML = '<div class="now"><div class="now-time" id="now-time">' + fmtTime(now) + '</div><div class="now-date">' + esc(fmtLong(dayKey(now))) + '</div></div>' +
-      '<div class="card-head" style="text-align:center"><h3>Tap your name to clock in or out</h3></div>' +
-      '<div class="tiles">' + people.map((e, i) => {
-        const w = weeks[i];
-        const chip = w.clockedIn ? '<span class="chip in">In since ' + fmtTime(w.clockedIn.at) + '</span>' : w.issues.length ? '<span class="chip warn">Missed punch</span>' : '<span class="chip out">Out</span>';
-        return '<button class="tile" type="button" data-emp="' + e.id + '"' + (unread[i] ? ' title="New notifications"' : "") + '><div class="who"><span class="avatar">' + esc(initials(e)) + '</span>' + (unread[i] ? '<span class="newdot"></span>' : "") + '<div><div class="nm">' + esc(fullName(e)) + '</div><div class="pos">' + esc(e.position || "") + '</div></div></div>' + chip + '</button>';
-      }).join("") +
-      managers.map(e => '<button class="tile" type="button" data-emp="' + e.id + '"><div class="who"><span class="avatar">' + esc(initials(e)) + '</span><div><div class="nm">' + esc(fullName(e)) + '</div><div class="pos">' + esc(e.position || "Manager") + '</div></div></div><span class="chip out">Manager</span></button>').join("") +
-      '<button class="tile add" type="button" id="new-acct">+ New employee?<br><span class="hint">Make your account</span></button></div>';
-    $$("[data-emp]").forEach(b => b.addEventListener("click", () => go("signin", { id: b.dataset.emp })));
-    $("#new-acct").addEventListener("click", () => go("newacct"));
+      (b.people.length ? '<div class="card-head" style="text-align:center"><h3>Tap your name to clock in or out</h3></div>' : '<div class="empty"><b>No one here yet</b><span class="muted">The manager invites employees from Team.</span></div>') +
+      '<div class="tiles">' + b.people.map(e => {
+        const chip = !e.hourly ? '<span class="chip out">Manager</span>' : e.inSince ? '<span class="chip in">In since ' + fmtTime(e.inSince) + '</span>' : '<span class="chip out">Out</span>';
+        return '<button class="tile" type="button" data-emp="' + e.id + '"' + (e.unread ? ' title="New notifications"' : "") + '><div class="who"><span class="avatar">' + esc(initials(e)) + '</span>' + (e.unread ? '<span class="newdot"></span>' : "") + '<div><div class="nm">' + esc(fullName(e)) + '</div><div class="pos">' + esc(e.position || "") + '</div></div></div>' + chip + '</button>';
+      }).join("") + '</div>';
+    $$("[data-emp]").forEach(t => t.addEventListener("click", () => go("signin", { id: t.dataset.emp })));
   };
   await draw();
   let n = 0;
   pollT = setInterval(() => {
     const el = $("#now-time"); if (el) el.textContent = fmtTime(new Date());
-    if (!dlg.open && ++n % 6 === 0) draw().catch(() => {});   // every 30 seconds, pick up clock-ins from the other computers
+    if (!dlg.open && !document.hidden && ++n % 6 === 0) draw().catch(() => {});   // every 30 seconds, pick up clock-ins from the other computers
   }, 5000);
 }
 
 /* ================================================================ sign in */
-async function viewSignIn({ id }) {
-  await loadEmps();
-  const emp = D.emps.find(e => e.id === id); if (!emp) return go("home");
-  view().innerHTML = '<div class="narrow"><div class="card">' + backBtn("Not you?") +
+async function signInWith(empId, password) {
+  const r = await api("login", { emp: empId, password });
+  S.tok = r.tok; Mirror.clear();
+  signIn(r.emp);
+  await syncNow(); await loadSettings(); await loadEmps();
+  return r;
+}
+async function viewSignIn({ id, phone }) {
+  const emp = (D.board || []).find(e => e.id === id); if (!emp) return go("home");
+  centerCard((phone ? "" : backBtn("Not you?")) +
     '<div class="who-big"><span class="avatar">' + esc(initials(emp)) + '</span><div><h2>' + esc(fullName(emp)) + '</h2><p class="muted">' + esc(emp.position || "") + '</p></div></div>' +
     '<div class="field"><label for="pw">Password</label><input type="password" id="pw" autocomplete="current-password"></div>' +
     '<p class="err" id="err"></p>' +
     '<button class="btn btn-primary btn-lg btn-block" type="button" id="go">Sign in</button>' +
-    '<button class="btn btn-text" type="button" id="forgot">Forgot your password?</button></div></div>';
-  $("#back").addEventListener("click", () => go("home"));
+    '<button class="btn btn-text" type="button" id="forgot">Forgot your password?</button>');
+  if ($("#back")) $("#back").addEventListener("click", () => go("home", { auto: false }));
   $("#pw").focus();
   const tryIt = async () => {
     const btn = $("#go"); btn.disabled = true; $("#err").textContent = "";
     try {
-      const fresh = await readJson(["employees"], emp.id + ".json") || emp;
-      if (!(await checkPassword(fresh, $("#pw").value))) { $("#err").textContent = "That password isn't right. Try again."; btn.disabled = false; $("#pw").select(); return; }
-      signIn(fresh);
-      if (fresh.mustChange) return changePassword(true).then(() => go(fresh.hourly === false ? "manage" : "me", { tab: "cards" }));
-      go(fresh.hourly === false ? "manage" : "me", { tab: "cards" });
-    } catch (e) { btn.disabled = false; showError(e); }
+      const r = await signInWith(emp.id, $("#pw").value);
+      if (r.mustChange) await changePassword(true);
+      go(S.emp.hourly === false ? "manage" : "me", { tab: "cards" });
+    } catch (e) { btn.disabled = false; $("#err").textContent = e.message; $("#pw").select(); }
   };
   $("#go").addEventListener("click", tryIt);
   $("#pw").addEventListener("keydown", (e) => { if (e.key === "Enter") tryIt(); });
   $("#forgot").addEventListener("click", async () => {
-    const mgr = admins().filter(a => a.id !== emp.id).map(fullName);
-    if (!emp.admin || mgr.length) return alertBox("Forgot your password?", (mgr.length ? mgr.join(" or ") : "The manager") + " can reset it for you in Manage → Employees. You'll pick a new password the next time you sign in.");
-    // the manager uses the recovery code
-    const v = await ask({ title: "Reset with the recovery code", html: '<p class="muted">Type the recovery code you wrote down at setup, then choose a new password.</p>' +
+    if (!emp.admin) return alertBox("Forgot your password?", "Your manager can reset it for you in Team. You'll pick a new password the next time you sign in.");
+    const v = await ask({ title: "Reset with the recovery code", html: '<p class="muted">Type the recovery code you wrote down at setup, then choose a new password. (Another manager can also reset it for you in Team.)</p>' +
       '<div class="field"><label for="rc">Recovery code</label><input type="text" id="rc" autocomplete="off" placeholder="XXXX-XXXX-XXXX"></div>' +
       '<div class="grid2"><div class="field"><label for="np">New password</label><input type="password" id="np"></div><div class="field"><label for="np2">Type it again</label><input type="password" id="np2"></div></div>' + pwHint + '<p class="err" id="rerr"></p>',
       buttons: [{ label: "Cancel", value: false }, { label: "Reset password", value: true, kind: "btn-primary", check: async () => {
-        const code = $("#rc").value.toUpperCase().replace(/[^A-Z0-9]/g, ""); const r = D.settings.recovery;
-        if (!r || (await pwHash(code, r.salt)) !== r.hash) { $("#rerr").textContent = "That recovery code isn't right."; return false; }
         const p = pwProblem($("#np").value, $("#np2").value); if (p) { $("#rerr").textContent = p; return false; }
-        await setPassword(emp, $("#np").value); emp.mustChange = false; await saveEmp(emp);
-        S.emp = emp; await logChange("Reset the manager password with the recovery code"); S.emp = null; return true;
+        try { await api("recover", { emp: emp.id, code: $("#rc").value, password: $("#np").value }); return true; } catch (e) { $("#rerr").textContent = e.message; return false; }
       } }] });
     if (v) toast("Password reset. Sign in with the new one.");
   });
 }
 async function changePassword(forced) {
-  const emp = S.emp;
   return ask({ title: forced ? "Choose a new password" : "Change your password", html: (forced ? '<p class="muted">Your password was reset. Choose a new one that only you know.</p>' : "") +
     (forced ? "" : '<div class="field"><label for="op">Current password</label><input type="password" id="op"></div>') +
     '<div class="grid2"><div class="field"><label for="np">New password</label><input type="password" id="np"></div><div class="field"><label for="np2">Type it again</label><input type="password" id="np2"></div></div>' + pwHint + '<p class="err" id="perr"></p>',
     buttons: (forced ? [] : [{ label: "Cancel", value: false }]).concat([{ label: "Save password", value: true, kind: "btn-primary", check: async () => {
-      if (!forced && !(await checkPassword(emp, $("#op").value))) { $("#perr").textContent = "Your current password isn't right."; return false; }
       const p = pwProblem($("#np").value, $("#np2").value); if (p) { $("#perr").textContent = p; return false; }
-      await setPassword(emp, $("#np").value); emp.mustChange = false; await saveEmp(emp); return true;
+      try { await api("changePassword", { old: forced ? "" : $("#op").value, password: $("#np").value }); return true; } catch (e) { $("#perr").textContent = e.message; return false; }
     } }]) }).then(v => { if (v) toast("Password saved."); return v; });
-}
-async function viewNewAccount() {
-  view().innerHTML = '<div class="narrow"><div class="card">' + backBtn("Cancel") +
-    '<div class="card-head"><h2>Make your account</h2><p class="muted">Your name shows on the time clock. Your password keeps your time card private.</p></div>' +
-    '<div class="grid2"><div class="field"><label for="n-first">First name</label><input type="text" id="n-first" autocomplete="off"></div>' +
-    '<div class="field"><label for="n-last">Last name</label><input type="text" id="n-last" autocomplete="off"></div></div>' +
-    '<div class="field"><label for="n-pos">Position</label><input type="text" id="n-pos" autocomplete="off"></div>' +
-    '<div class="grid2"><div class="field"><label for="n-pw">Password</label><input type="password" id="n-pw" autocomplete="new-password"></div>' +
-    '<div class="field"><label for="n-pw2">Type it again</label><input type="password" id="n-pw2" autocomplete="new-password"></div></div>' + pwHint +
-    '<p class="err" id="n-err"></p><button class="btn btn-primary btn-lg btn-block" type="button" id="n-go">Make my account</button></div></div>';
-  $("#back").addEventListener("click", () => go("home"));
-  $("#n-go").addEventListener("click", async () => {
-    const first = $("#n-first").value.trim(), last = $("#n-last").value.trim(), position = $("#n-pos").value.trim();
-    await loadEmps();
-    let err = !first || !last ? "Type your first and last name." : !position ? "Type your position." : pwProblem($("#n-pw").value, $("#n-pw2").value);
-    if (!err && D.emps.some(e => fullName(e).toLowerCase() === (first + " " + last).toLowerCase())) err = "There's already an account with that name. Tap your name on the home screen instead.";
-    if (err) { $("#n-err").textContent = err; return; }
-    const emp = { id: uid(), first, last, position, admin: false, hourly: true, active: true, created: Date.now(), ptoStart: 0, sickStart: 0, isNew: true };
-    try {
-      await setPassword(emp, $("#n-pw").value); await saveEmp(emp); await loadEmps();
-      signIn(emp); await logChange("New account: " + fullName(emp) + " (" + position + ")");
-      await notifyManagers("New account made: " + fullName(emp) + " (" + position + "). If you don't know this person, mark them inactive in Team.", { v: "manage", tab: "team" });
-      toast("Welcome, " + first + "! Your account is ready."); go("me");
-    } catch (e) { showError(e); }
-  });
 }
 
 /* ================================================================ an employee's own page */
@@ -1312,11 +1669,11 @@ function summaryCsv(wk, ws) {
     [w.issues.length ? "Missed punch" : "", w.estimated ? hrs(w.estimated) + " h estimated" : "", w.signed && !w.changedAfterSign ? "Confirmed by employee" : "Not confirmed"].filter(Boolean).join("; ")]);
   return rows.map(r => r.map(csvCell).join(",")).join("\r\n") + "\r\n";
 }
-async function download(name, text) {
+async function download(name, text, type = "text/csv") {
   if (inArtifact) {   // the Claude preview hands files over through its own save prompt
-    try { const dl = await window.claude.use("downloads"); if (dl) { await dl.save({ filename: name, data: new Blob([text], { type: "text/csv" }) }); return; } } catch (_) { return; }
+    try { const dl = await window.claude.use("downloads"); if (dl) { await dl.save({ filename: name, data: new Blob([text], { type }) }); return; } } catch (_) { return; }
   }
-  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type: "text/csv" })); a.download = name;
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name;
   document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
 
@@ -1495,12 +1852,56 @@ async function paneApprovals(P, pend, otPend) {
 /* employees */
 async function panePeople(P) {
   const bals = await Promise.all(D.emps.map(balances));
-  P.innerHTML = '<div class="card"><div class="page-head"><div class="card-head"><h3>Employees</h3><p class="muted">Employees make their own account on the time clock. You can also add someone here.</p></div><button class="btn btn-primary" type="button" id="add-emp">+ Add employee</button></div>' +
+  let dv = { devices: [], invites: [] }; try { dv = await api("devices"); } catch (_) {}
+  const pendingDev = dv.devices.filter(d => d.status === "pending");
+  const openInv = dv.invites.filter(i => !i.used && i.role !== "device").sort((a, b) => b.created - a.created);
+  P.innerHTML =
+    (pendingDev.length ? '<div class="card wait"><div class="card-head"><h3>New computer waiting to be allowed</h3><p class="muted">Allow it only if it\'s an office computer. Phones invited for someone who works away from the office connect on their own.</p></div><div class="list">' +
+      pendingDev.map(d => '<div class="item-row"><div><span class="t">' + esc(d.label) + '</span><span class="s">Asked ' + esc(fmtStamp(d.created)) + '</span></div><div class="row"><button class="btn btn-secondary mini" data-deny-dev="' + d.id + '">Don\'t allow</button><button class="btn btn-primary mini" data-allow-dev="' + d.id + '">Allow</button></div></div>').join("") + '</div></div>' : "") +
+    '<div class="card"><div class="page-head"><div class="card-head"><h3>Employees</h3><p class="muted">Invite someone and they make their own account from the email.</p></div><div class="row"><button class="btn btn-primary" type="button" id="invite">Invite an employee</button></div></div>' +
     '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Position</th><th class="num">PTO left</th><th class="num">Sick left</th><th>Status</th><th></th></tr></thead><tbody>' +
-    D.emps.map((e, i) => '<tr><td><b>' + esc(fullName(e)) + '</b>' + (e.admin ? ' <span class="tag ok">Manager</span>' : "") + (e.isNew ? ' <span class="tag warn">New</span>' : "") + '</td><td>' + esc(e.position || "") + (e.hourly === false ? ' <span class="hint">(not hourly)</span>' : "") + '</td><td class="num">' + hrs(bals[i].pto) + '</td><td class="num">' + hrs(bals[i].sick) + '</td><td>' + (e.active === false ? '<span class="tag">Inactive</span>' : '<span class="tag ok">Active</span>') + '</td>' +
-      '<td class="num"><button class="btn btn-secondary mini" data-edit-emp="' + e.id + '">Edit</button></td></tr>').join("") + '</tbody></table></div></div>';
+    D.emps.map((e, i) => '<tr><td><b>' + esc(fullName(e)) + '</b>' + (e.admin ? ' <span class="tag ok">Manager</span>' : "") + '</td><td>' + esc(e.position || "") + (e.hourly === false ? ' <span class="hint">(not hourly)</span>' : "") + '</td><td class="num">' + hrs(bals[i].pto) + '</td><td class="num">' + hrs(bals[i].sick) + '</td><td>' + (e.active === false ? '<span class="tag">Inactive</span>' : '<span class="tag ok">Active</span>') + '</td>' +
+      '<td class="num"><button class="btn btn-secondary mini" data-edit-emp="' + e.id + '">Edit</button></td></tr>').join("") + '</tbody></table></div>' +
+    (openInv.length ? '<p class="hint">Invites sent but not used yet: ' + openInv.map(i => esc(i.name || "someone") + (i.phone ? " (phone)" : "") + ", " + esc(fmtDate(dayKey(i.created)))).join(" · ") + '</p>' : "") +
+    '<details class="more"><summary>Add someone without an email invite</summary><div><p class="muted">Makes the account with a temporary password that you give them. They choose their own the first time they sign in.</p><div><button class="btn btn-secondary" type="button" id="add-emp">Add employee</button></div></div></details></div>' +
+    '<div class="card"><div class="page-head"><div class="card-head"><h3>Computers and phones</h3><p class="muted">Only these can use the time clock. Remove one that\'s no longer used.</p></div><button class="btn btn-secondary" type="button" id="connect-pc">Connect another office computer</button></div>' +
+    (dv.devices.length ? '<div class="list">' + dv.devices.sort((a, b) => a.created - b.created).map(d => '<div class="item-row"><div><span class="t">' + esc(d.label) + (d.emp ? " · " + esc(nameOf(d.emp)) : "") + '</span><span class="s">' +
+      (d.status === "allowed" ? "Allowed" : d.status === "pending" ? "Waiting for you to allow it" : "Not allowed") + ' · connected ' + esc(fmtDate(dayKey(d.created))) + '</span></div>' +
+      '<div class="row">' + (d.status !== "allowed" ? '<button class="btn btn-primary mini" data-allow-dev="' + d.id + '">Allow</button>' : "") + '<button class="linkx" data-rm-dev="' + d.id + '">Remove</button></div></div>').join("") + '</div>' : '<p class="muted">None yet.</p>') + '</div>';
+  $("#invite").addEventListener("click", () => inviteDialog("employee"));
+  $("#connect-pc").addEventListener("click", () => inviteDialog("device"));
   $("#add-emp").addEventListener("click", () => editEmployee(null));
   $$("[data-edit-emp]").forEach(b => b.addEventListener("click", () => editEmployee(D.emps.find(e => e.id === b.dataset.editEmp))));
+  const decide = async (id, body, msg) => { try { await api("decideDevice", Object.assign({ id }, body)); await logChange(msg); go("manage", { tab: "team" }); } catch (e) { showError(e); } };
+  $$("[data-allow-dev]").forEach(b => b.addEventListener("click", () => { const d = dv.devices.find(x => x.id === b.dataset.allowDev); decide(d.id, { allow: true }, "Allowed " + d.label + " to use the time clock"); }));
+  $$("[data-deny-dev]").forEach(b => b.addEventListener("click", () => { const d = dv.devices.find(x => x.id === b.dataset.denyDev); decide(d.id, { allow: false }, "Didn't allow " + d.label); }));
+  $$("[data-rm-dev]").forEach(b => b.addEventListener("click", async () => {
+    const d = dv.devices.find(x => x.id === b.dataset.rmDev);
+    const v = await ask({ title: "Remove " + d.label + "?", text: "It can't use the time clock anymore until it's connected again with an invite.", buttons: [{ label: "Cancel", value: false }, { label: "Remove", value: true, kind: "btn-danger-solid" }] });
+    if (v) decide(d.id, { remove: true }, "Removed " + d.label + " from the time clock");
+  }));
+}
+async function inviteDialog(role) {
+  const dev = role === "device";
+  const v = await ask({ title: dev ? "Connect another office computer" : "Invite an employee", wide: true, html: dev
+    ? '<p class="muted">Makes a link to open once on the other computer. You\'ll then allow it here. (An employee opening their own invite email on a computer connects it too.)</p>'
+    : '<div class="field"><label for="iname">Their name (optional)</label><input type="text" id="iname" placeholder="First and last name"></div>' +
+      '<label class="check"><input type="checkbox" id="iphone"><span><b>Works away from the office and clocks in on their own phone</b><span class="hint">For example, a laborer on job sites. Their phone connects right away and only they can sign in on it.</span></span></label>',
+    buttons: [{ label: "Cancel", value: false }, { label: "Make the link", value: true, kind: "btn-primary" }] });
+  if (!v) return;
+  const name = $("#iname") ? $("#iname").value.trim() : "", phone = $("#iphone") ? $("#iphone").checked : false;
+  let r; try { r = await api("invite", { role: dev ? "device" : "employee", phone, name }); } catch (e) { return showError(e); }
+  const link = joinLink(r.code);
+  const first = name.split(" ")[0];
+  const body = dev ? "Open this link on the office computer to connect it to the Masterpiece Time Clock:\n\n" + link
+    : "Hi" + (first ? " " + first : "") + ",\n\nHere's your invite to the Masterpiece Time Clock. " + (phone ? "Open this link on your phone" : "Open this link on an office computer") + ", then make your account with your name, position and a password:\n\n" + link + "\n\nThe link works once to make your account. After that, just sign in with your name and password." + (phone ? " Tip: add the page to your home screen so it's one tap away." : "");
+  await logChange(dev ? "Made a link to connect another office computer" : "Invited " + (name || "an employee") + (phone ? " (phone)" : ""));
+  await ask({ title: dev ? "Link ready" : "Invite ready", wide: true, html: '<div class="field"><label for="il">Link</label><input type="text" id="il" readonly value="' + esc(link) + '"></div>' +
+    '<p class="hint">' + (dev ? "It works on one computer." : "It makes one account. Opening it again on another office computer just asks you to allow that computer.") + '</p>' +
+    '<div class="row"><a class="btn btn-primary" id="mail" href="mailto:?subject=' + encodeURIComponent(dev ? "Connect this computer to the Masterpiece Time Clock" : "Your Masterpiece Time Clock invite") + '&body=' + encodeURIComponent(body) + '">Email it</a><button class="btn btn-secondary" type="button" id="copy">Copy link</button></div>',
+    buttons: [{ label: "Done", value: true, kind: "btn-secondary" }],
+    onOpen: () => { $("#copy").addEventListener("click", async () => { try { await navigator.clipboard.writeText(link); toast("Copied."); } catch (_) { $("#il").select(); } }); } });
+  go("manage", { tab: "team" });
 }
 async function editEmployee(emp) {
   const isNew = !emp;
@@ -1511,7 +1912,7 @@ async function editEmployee(emp) {
     '<div class="field"><label for="ep">Position</label><input type="text" id="ep" value="' + esc(e.position) + '"></div>' +
     '<label class="check"><input type="checkbox" id="eh"' + (e.hourly !== false ? " checked" : "") + '><span><b>Hourly</b><span class="hint">Shows on the time clock and in weekly hours.</span></span></label>' +
     '<label class="check"><input type="checkbox" id="ea"' + (e.admin ? " checked" : "") + '><span><b>Manager</b><span class="hint">Can approve requests, fix time cards and reset passwords.</span></span></label>' +
-    (isNew ? '<div class="field"><label for="et">Temporary password</label><input type="text" id="et" value="' + newCode().slice(0, 4).toLowerCase() + rnd().slice(0, 2) + '"><span class="hint">They choose their own the first time they sign in.</span></div>' :
+    (isNew ? '<div class="field"><label for="et">Temporary password</label><input type="text" id="et" value="mpc-' + rnd().slice(0, 5) + '"><span class="hint">They choose their own the first time they sign in.</span></div>' :
       '<label class="check"><input type="checkbox" id="ex"' + (e.active === false ? "" : " checked") + '><span><b>Active</b><span class="hint">Uncheck when someone leaves. Their time cards stay.</span></span></label>' +
       '<label class="check"><input type="checkbox" id="ep2"' + (e.earnPto === false ? "" : " checked") + '><span><b>Earns PTO</b><span class="hint">' + esc(describeRule(accrualRule("pto"))) + '</span></span></label>' +
       '<label class="check"><input type="checkbox" id="es2"' + (e.earnSick === false ? "" : " checked") + '><span><b>Earns sick leave</b><span class="hint">' + esc(describeRule(accrualRule("sick"))) + '</span></span></label>' +
@@ -1524,24 +1925,23 @@ async function editEmployee(emp) {
       if (!$("#ef").value.trim() || !$("#el").value.trim()) { $("#eerr").textContent = "Type a first and last name."; return false; }
       if (!isNew && e.admin && !$("#ea").checked && admins().filter(a => a.id !== e.id).length === 0) { $("#eerr").textContent = "There has to be at least one manager."; return false; }
       if (!isNew && e.admin && $("#ex") && !$("#ex").checked && admins().filter(a => a.id !== e.id).length === 0) { $("#eerr").textContent = "There has to be at least one active manager."; return false; }
-      if (isNew && $("#et").value.length < 4) { $("#eerr").textContent = "The temporary password needs at least 4 characters."; return false; }
+      if (isNew && $("#et").value.length < 6) { $("#eerr").textContent = "The temporary password needs at least 6 characters."; return false; }
       return true;
     } }],
   });
   if ($("#reset-pw")) $("#reset-pw").addEventListener("click", async () => {
-    const tp = rnd().slice(0, 6);
-    const fresh = await readJson(["employees"], e.id + ".json") || e;
-    await setPassword(fresh, tp); fresh.mustChange = true; await saveEmp(fresh); await logChange("Reset " + fullName(fresh) + "'s password");
+    const tp = "mpc-" + rnd().slice(0, 5);
+    try { await api("resetPassword", { emp: e.id, temp: tp }); } catch (err) { $("#eerr").textContent = err.message; return; }
+    await logChange("Reset " + fullName(e) + "'s password");
     const box = $("#eerr"); box.style.color = "var(--good)"; box.textContent = "Temporary password: " + tp + ". They'll choose a new one when they sign in.";
   });
   const v = await pending;
   if (v === null || v === false) return;
   e.first = $("#ef").value.trim(); e.last = $("#el").value.trim(); e.position = $("#ep").value.trim(); e.hourly = $("#eh").checked; e.admin = $("#ea").checked; delete e.isNew;
-  if (isNew) { await setPassword(e, $("#et").value); e.mustChange = true; const tp = $("#et").value; await saveEmp(e); await logChange("Added employee " + fullName(e)); await alertBox("Employee added", fullName(e) + "'s temporary password is: " + tp + ". They'll choose their own the first time they sign in."); }
+  if (isNew) { const tp = $("#et").value; const made = await api("addEmployee", { e, temp: tp }); Mirror.rows.set("employees/" + made.emp.id + ".json", JSON.stringify(made.emp)); await syncNow(); await logChange("Added employee " + fullName(e)); await alertBox("Employee added", fullName(e) + "'s temporary password is: " + tp + ". They'll choose their own the first time they sign in."); }
   else {
     e.active = $("#ex").checked; e.earnPto = $("#ep2").checked; e.earnSick = $("#es2").checked;
     const bp = Number($("#bp").value) || 0, bs = Number($("#bs").value) || 0, note = $("#bn").value.trim() || "Balance change";
-    const fresh = await readJson(["employees"], e.id + ".json"); if (fresh) { e.hash = fresh.hash; e.salt = fresh.salt; e.iter = fresh.iter; e.mustChange = fresh.mustChange; }
     await saveEmp(e);
     if (bp) await addLedger(e.id, "pto", bp, note);
     if (bs) await addLedger(e.id, "sick", bs, note);
@@ -1605,17 +2005,19 @@ async function paneSettings(P, year, open) {
   const nHol = (D.settings.holidays || []).filter(h => h.date.startsWith(year + "-")).length;
   const r = Number(D.settings.round) || 0;
   const SEC = [
+    ["report", "Create a time card summary", "For taxes and records: monthly, quarterly, yearly or any dates. Print it or download it."],
     ["hol", "Paid holidays", nHol + " paid holiday" + (nHol === 1 ? "" : "s") + " in " + year + ". Add, change or remove holidays."],
     ["log", "Change history", "See every change a manager has made to time cards, holidays and settings."],
     ["earn", "PTO and sick leave earned", "PTO: " + describeRule(accrualRule("pto")) + " · Sick: " + describeRule(accrualRule("sick"))],
     ["round", "Rounding clock times", r ? "Counted to the nearest " + r + " minutes" : "Counted exactly, to the minute"],
     ["code", "Manager password recovery code", "Make a new code if the one from setup is lost."],
-    ["folder", "Where time cards are saved", Store.mode === "folder" ? "The " + Store.root.name + " folder in Google Drive" : "This browser only (preview)"],
+    ["backup", "Backup copy of all records", "Download everything to this computer, for safekeeping."],
   ];
   P.innerHTML = '<div class="card acc-card"><div class="card-head"><h2>Settings</h2><p class="muted">Tap a setting to open it.</p></div>' +
     SEC.map(([k, t, d]) => '<details class="acc" data-acc-sec="' + k + '"' + (open === k ? " open" : "") + '><summary><div><b>' + esc(t) + '</b><span>' + esc(d) + '</span></div><span class="acc-chev" aria-hidden="true">›</span></summary><div class="acc-body" id="sec-' + k + '"></div></details>').join("") + '</div>' +
     '<div id="s-core" hidden></div>';
   paneHolidays($("#sec-hol"), year);
+  reportForm($("#sec-report"));
   paneSettingsCore($("#s-core"));
   for (const k of ["earn", "round", "code", "folder"]) { const c = $('#s-core [data-sec="' + k + '"]'); if (c) $("#sec-" + k).appendChild(c); }
   let logDone = false;
@@ -1634,8 +2036,8 @@ function paneSettingsCore(P) {
       '<div class="field" data-show="hours"><label>For every … hours worked</label><input type="number" data-k="per" step="0.25" min="1" value="' + (a.per || 40) + '"></div>' +
       '<div class="field"><label>Most a balance can reach (blank = no limit)</label><input type="number" data-k="max" step="0.25" min="0" value="' + (a.max || "") + '"></div></div></div>'; }).join("") +
     '<div><button class="btn btn-primary" type="button" id="acc-save">Save time off settings</button></div></div>' +
-    '<div class="card" data-sec="folder"><div class="card-head"><h3>Shared folder</h3><p class="muted">' + (Store.mode === "folder" ? 'This computer saves to the <b>' + esc(Store.root.name) + '</b> folder.' : 'This preview saves in this browser only.') + ' Every office computer should use the same Google Drive folder.</p></div>' +
-    (Store.canFolder ? '<div><button class="btn btn-secondary" type="button" id="folder">Use a different folder</button></div>' : "") + '</div>' +
+    '<div class="card" data-sec="backup"><div class="card-head"><h3>Backup</h3><p class="muted">All time cards are kept privately on the time clock\'s server, which only the owner can open. Download a full copy any time you want one for your own records. Keep it somewhere private: it has everyone\'s hours.</p></div>' +
+    '<div><button class="btn btn-secondary" type="button" id="backup">Download full backup</button></div></div>' +
     '<div class="card" data-sec="code"><div class="card-head"><h3>Manager recovery code</h3><p class="muted">The code you wrote down at setup lets a manager reset a forgotten password. If it\'s lost, make a new one here. The old code stops working.</p></div><div><button class="btn btn-secondary" type="button" id="recode">Make a new recovery code</button></div></div>' +
     '';
   const showPer = () => $$("[data-acc]").forEach(b => { $('[data-show="hours"]', b).hidden = $('[data-k="mode"]', b).value !== "hours"; });
@@ -1651,12 +2053,160 @@ function paneSettingsCore(P) {
     await loadSettings(); D.settings.round = Number($("#round").value); await saveSettings();
     await logChange("Changed rounding to " + ($("#round").value === "0" ? "exact minutes" : "nearest " + $("#round").value + " minutes")); toast("Saved.");
   });
-  if ($("#folder")) $("#folder").addEventListener("click", async () => { try { await chooseFolder(); } catch (e) { if (e && e.name === "AbortError") return; return showError(e); } S.emp = null; paintBar(); enterApp(); });
+  $("#backup").addEventListener("click", async () => {
+    try { const r = await api("backup"); download("Masterpiece Time Clock backup " + dayKey(new Date()) + ".json", JSON.stringify(r, null, 1), "application/json"); await logChange("Downloaded a full backup"); }
+    catch (e) { showError(e); }
+  });
   $("#recode").addEventListener("click", async () => {
-    const code = newCode(); const salt = toHex(crypto.getRandomValues(new Uint8Array(16)));
-    await loadSettings(); D.settings.recovery = { salt, hash: await pwHash(code.replace(/-/g, ""), salt) }; await saveSettings(); await logChange("Made a new manager recovery code");
+    const code = newCode();
+    try { await api("setRecovery", { code }); } catch (e) { return showError(e); }
+    await logChange("Made a new manager recovery code");
     await ask({ title: "Your new recovery code", html: '<div class="code">' + code + '</div><p class="muted">Write it down and keep it somewhere safe. The old code no longer works.</p>', buttons: [{ label: "I wrote it down", value: true, kind: "btn-primary" }] });
   });
+}
+
+/* ================================================================ summaries for taxes and records */
+function quickRange(k) {
+  const now = new Date(), y = now.getFullYear(), m = now.getMonth(), q = Math.floor(m / 3);
+  const R = (a, b) => [dayKey(a), dayKey(b)];
+  switch (k) {
+    case "thisMonth": return R(new Date(y, m, 1), new Date(y, m + 1, 0));
+    case "lastMonth": return R(new Date(y, m - 1, 1), new Date(y, m, 0));
+    case "thisQuarter": return R(new Date(y, q * 3, 1), new Date(y, q * 3 + 3, 0));
+    case "lastQuarter": return R(new Date(y, q * 3 - 3, 1), new Date(y, q * 3, 0));
+    case "thisYear": return R(new Date(y, 0, 1), new Date(y, 11, 31));
+    case "lastYear": return R(new Date(y - 1, 0, 1), new Date(y - 1, 11, 31));
+  }
+  return null;
+}
+function reportForm(P) {
+  const picks = [["lastMonth", "Last month"], ["thisMonth", "This month"], ["lastQuarter", "Last quarter"], ["thisQuarter", "This quarter"], ["lastYear", "Last year"], ["thisYear", "This year"], ["custom", "Pick dates"]];
+  const [f0, t0] = quickRange("lastMonth");
+  P.innerHTML = '<p class="muted">Pick the dates, then create the summary. You can print it or download it as a spreadsheet.</p>' +
+    '<div class="field"><label>Dates</label><div class="row" id="picks">' + picks.map(([k, l], i) => '<button class="btn btn-secondary mini' + (i === 0 ? " on-pick" : "") + '" type="button" data-pick="' + k + '">' + l + '</button>').join("") + '</div></div>' +
+    '<div class="grid2"><div class="field"><label for="rf">From</label><input type="date" id="rf" value="' + f0 + '"></div><div class="field"><label for="rt">To</label><input type="date" id="rt" value="' + t0 + '"></div></div>' +
+    '<div class="field" style="max-width:360px"><label for="rwho">Who</label><select id="rwho"><option value="">Everyone</option>' + D.emps.filter(e => e.hourly !== false).map(e => '<option value="' + e.id + '">' + esc(fullName(e)) + '</option>').join("") + '</select></div>' +
+    '<label class="check"><input type="checkbox" id="rdetail"><span><b>Include the day-by-day details</b><span class="hint">Adds each person\'s clock-in and clock-out times, PTO, sick and holiday hours for every day. Takes more pages. Leave it off for the one-page overview.</span></span></label>' +
+    '<p class="err" id="rerr"></p><div><button class="btn btn-primary" type="button" id="rgo">Create summary</button></div>';
+  $$("[data-pick]", P).forEach(b => b.addEventListener("click", () => {
+    $$("[data-pick]", P).forEach(x => x.classList.toggle("on-pick", x === b));
+    const r = quickRange(b.dataset.pick); if (r) { $("#rf").value = r[0]; $("#rt").value = r[1]; } else $("#rf").focus();
+  }));
+  $("#rgo").addEventListener("click", () => {
+    const from = $("#rf").value, to = $("#rt").value;
+    if (!from || !to || to < from) { $("#rerr").textContent = "Choose a From date and a To date after it."; return; }
+    go("report", { from, to, who: $("#rwho").value, detail: $("#rdetail").checked });
+  });
+}
+/* gathers everything for a date range. Weeks count toward the range by their week-ending Friday, the way payroll does. */
+async function buildReport({ from, to, who }) {
+  await syncNow(); await loadEmps();
+  const people = D.emps.filter(e => e.hourly !== false && (!who || e.id === who));
+  const weeks = []; for (let wk = weekOf(fromKey(from)); fridayOf(wk) <= to; wk = shiftWeek(wk, 1)) if (fridayOf(wk) >= from) weeks.push(wk);
+  const endT = addDays(fromKey(to), 1).getTime(), startT = fromKey(from).getTime();
+  const metas = {}; for (const wk of weeks) metas[wk] = await weekMeta(wk);
+  const out = [];
+  for (const e of people) {
+    const ws = []; for (const wk of weeks) ws.push(await weekFor(e, wk));
+    const L = await ledger(e.id);
+    const inRange = L.filter(x => x.t >= startT && x.t < endT);
+    const sum = (k) => r2(ws.reduce((a, w) => a + w[k], 0));
+    const bal = (cat) => r2((Number(e[cat + "Start"]) || 0) + L.filter(x => x.cat === cat && x.t < endT).reduce((a, x) => a + x.hours, 0));
+    const earned = (cat) => r2(inRange.filter(x => x.cat === cat && x.hours > 0).reduce((a, x) => a + x.hours, 0));
+    const p = { emp: e, ws, worked: sum("worked"), reg: sum("reg"), ot: sum("ot"), pto: sum("pto"), sick: sum("sick"), holiday: sum("holiday"), total: sum("total"),
+      ptoEarned: earned("pto"), sickEarned: earned("sick"), ptoLeft: bal("pto"), sickLeft: bal("sick"), ledger: inRange,
+      weeksWorked: ws.filter(w => w.total > 0).length, otUnapproved: r2(ws.filter(w => w.otStatus === "pending" || w.otStatus === "changed").reduce((a, w) => a + w.ot, 0)),
+      missed: ws.reduce((a, w) => a + w.issues.length, 0), unconfirmed: ws.filter(w => w.total > 0 && !(w.signed && !w.changedAfterSign)).length };
+    if (p.total > 0 || e.active !== false) out.push(p);
+  }
+  const months = {};
+  for (const p of out) for (const w of p.ws) {
+    const mk = fridayOf(w.wk).slice(0, 7); const m = months[mk] = months[mk] || { reg: 0, ot: 0, pto: 0, sick: 0, holiday: 0, total: 0 };
+    for (const k of Object.keys(m)) m[k] = r2(m[k] + w[k]);
+  }
+  const tot = (k) => r2(out.reduce((a, p) => a + p[k], 0));
+  return { from, to, weeks, people: out, months, metas, unlocked: weeks.filter(wk => !metas[wk].locked && out.some(p => p.ws.find(w => w.wk === wk).total > 0)),
+    totals: { worked: tot("worked"), reg: tot("reg"), ot: tot("ot"), pto: tot("pto"), sick: tot("sick"), holiday: tot("holiday"), total: tot("total"), ptoEarned: tot("ptoEarned"), sickEarned: tot("sickEarned") } };
+}
+const rangeText = (a, b) => fmtDate(a) + " – " + fmtDate(b);
+function reportHtml(R, detail) {
+  const n = R.people.length; const T = R.totals;
+  const stat = (l, v) => '<div class="rs"><span>' + l + '</span><b>' + v + '</b></div>';
+  const mkeys = Object.keys(R.months).sort();
+  const monthName = (k) => { const [y, m] = k.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" }); };
+  let h = '<section class="rp-page"><div class="rp-head"><img src="brand/masterpiece-logo.svg" alt="" class="rp-logo"><div><h1>Time Card Summary</h1><p>Masterpiece Construction Experts</p></div>' +
+    '<div class="rp-meta"><b>' + esc(rangeText(R.from, R.to)) + '</b><span>' + (R.weeks.length ? R.weeks.length + " pay week" + (R.weeks.length > 1 ? "s" : "") + ", ending " + esc(fmtDate(fridayOf(R.weeks[0]))) + " to " + esc(fmtDate(fridayOf(R.weeks[R.weeks.length - 1]))) : "No pay weeks end in these dates") + '</span><span>Created ' + esc(fmtStamp(Date.now())) + (S.emp ? " by " + esc(fullName(S.emp)) : "") + '</span></div></div>' +
+    '<div class="rs-row">' + stat("Hours worked", hrs(T.worked)) + stat("Regular", hrs(T.reg)) + stat("Overtime", hrs(T.ot)) + stat("PTO used", hrs(T.pto)) + stat("Sick used", hrs(T.sick)) + stat("Holiday", hrs(T.holiday)) + stat("Total paid hours", hrs(T.total)) + '</div>' +
+    '<h2 class="rp-h">By employee</h2><table class="rp-t"><thead><tr><th>Employee</th><th class="num">Regular</th><th class="num">Overtime</th><th class="num">PTO used</th><th class="num">Sick used</th><th class="num">Holiday</th><th class="num">Total paid</th><th class="num">PTO earned</th><th class="num">Sick earned</th><th class="num">PTO left</th><th class="num">Sick left</th><th class="num">Weeks</th></tr></thead><tbody>' +
+    R.people.map(p => '<tr><td><b>' + esc(fullName(p.emp)) + '</b><div class="rp-sub">' + esc(p.emp.position || "") + (p.emp.active === false ? " (inactive)" : "") + '</div></td><td class="num">' + hrs(p.reg) + '</td><td class="num">' + hrs(p.ot) + '</td><td class="num">' + hrs(p.pto) + '</td><td class="num">' + hrs(p.sick) + '</td><td class="num">' + hrs(p.holiday) + '</td><td class="num"><b>' + hrs(p.total) + '</b></td><td class="num">' + hrs(p.ptoEarned) + '</td><td class="num">' + hrs(p.sickEarned) + '</td><td class="num">' + hrs(p.ptoLeft) + '</td><td class="num">' + hrs(p.sickLeft) + '</td><td class="num">' + p.weeksWorked + '</td></tr>').join("") +
+    '</tbody><tfoot><tr><td>All ' + n + ' employee' + (n === 1 ? "" : "s") + '</td><td class="num">' + hrs(T.reg) + '</td><td class="num">' + hrs(T.ot) + '</td><td class="num">' + hrs(T.pto) + '</td><td class="num">' + hrs(T.sick) + '</td><td class="num">' + hrs(T.holiday) + '</td><td class="num">' + hrs(T.total) + '</td><td class="num">' + hrs(T.ptoEarned) + '</td><td class="num">' + hrs(T.sickEarned) + '</td><td></td><td></td><td></td></tr></tfoot></table>' +
+    (mkeys.length > 1 ? '<h2 class="rp-h">By month</h2><table class="rp-t"><thead><tr><th>Month</th><th class="num">Regular</th><th class="num">Overtime</th><th class="num">PTO</th><th class="num">Sick</th><th class="num">Holiday</th><th class="num">Total paid</th></tr></thead><tbody>' +
+      mkeys.map(k => { const m = R.months[k]; return '<tr><td>' + esc(monthName(k)) + '</td><td class="num">' + hrs(m.reg) + '</td><td class="num">' + hrs(m.ot) + '</td><td class="num">' + hrs(m.pto) + '</td><td class="num">' + hrs(m.sick) + '</td><td class="num">' + hrs(m.holiday) + '</td><td class="num"><b>' + hrs(m.total) + '</b></td></tr>'; }).join("") + '</tbody></table>' : "");
+  const review = [];
+  if (R.unlocked.length) review.push(R.unlocked.length + " week" + (R.unlocked.length > 1 ? "s were" : " was") + " never locked for payroll: " + R.unlocked.map(wk => fmtDate(fridayOf(wk))).join(", ") + ".");
+  R.people.forEach(p => {
+    if (p.otUnapproved) review.push(fullName(p.emp) + ": " + hrs(p.otUnapproved) + " h overtime not approved.");
+    if (p.missed) review.push(fullName(p.emp) + ": " + p.missed + " missed punch" + (p.missed > 1 ? "es" : "") + " not fixed.");
+    if (p.unconfirmed) review.push(fullName(p.emp) + ": " + p.unconfirmed + " week" + (p.unconfirmed > 1 ? "s" : "") + " not confirmed by the employee.");
+  });
+  h += '<h2 class="rp-h">Good to know</h2><ul class="rp-notes">' + (review.length ? review.map(x => '<li>' + esc(x) + '</li>').join("") : '<li>Every week is locked, confirmed and has no missed punches.</li>') +
+    '<li>Pay weeks run Monday to Sunday and count toward the dates by their week-ending Friday, the same way payroll does. Overtime is hours worked over ' + OT_LIMIT + ' in a pay week.</li></ul></section>';
+  if (detail) for (const p of R.people) {
+    h += '<section class="rp-page rp-break"><div class="rp-head small"><div><h1>' + esc(fullName(p.emp)) + '</h1><p>' + esc(p.emp.position || "") + ' · ' + esc(rangeText(R.from, R.to)) + '</p></div></div>' +
+      '<div class="rs-row">' + stat("Regular", hrs(p.reg)) + stat("Overtime", hrs(p.ot)) + stat("PTO used", hrs(p.pto)) + stat("Sick used", hrs(p.sick)) + stat("Holiday", hrs(p.holiday)) + stat("Total paid", hrs(p.total)) + stat("PTO left", hrs(p.ptoLeft)) + stat("Sick left", hrs(p.sickLeft)) + '</div>';
+    if (p.ledger.length) h += '<h2 class="rp-h">PTO and sick balance changes</h2><table class="rp-t"><thead><tr><th>Date</th><th>Kind</th><th class="num">Hours</th><th>Why</th></tr></thead><tbody>' +
+      p.ledger.map(x => '<tr><td>' + esc(fmtDate(dayKey(x.t))) + '</td><td>' + (x.cat === "pto" ? "PTO" : "Sick") + '</td><td class="num">' + (x.hours > 0 ? "+" : "") + hrs(x.hours) + '</td><td>' + esc(x.note || "") + '</td></tr>').join("") + '</tbody></table>';
+    const worked = p.ws.filter(w => w.total > 0 || w.punches.length);
+    if (!worked.length) h += '<p class="rp-sub">No hours in these dates.</p>';
+    for (const w of worked) {
+      h += '<div class="rp-week"><h3>' + esc(weekLabel(w.wk)) + (R.metas[w.wk].locked ? " · paid" : "") + '</h3><table class="rp-t"><thead><tr><th>Day</th><th>Time in – time out</th><th class="num">Worked</th><th class="num">PTO</th><th class="num">Sick</th><th class="num">Holiday</th><th>Notes</th></tr></thead><tbody>' +
+        w.days.map((d, i) => {
+          if (i >= 5 && !d.pairs.length && !d.entries.length) return "";
+          const pairs = d.pairs.map(pr => (pr.in ? fmtTime(pr.in.at) : "—") + " – " + (pr.out ? fmtTime(pr.out.at) : pr.live ? "still in" : "—")).join(", ");
+          const c = (k) => d.entries.filter(x => x.cat === k).reduce((a, x) => a + x.hours, 0);
+          const notes = [d.issues.length ? "Missed punch" : "", d.est && !d.est.replaced ? "Estimated" : "", d.entries.filter(x => x.note && x.cat !== "worked").map(x => x.note).join(", ")].filter(Boolean).join("; ");
+          return '<tr><td>' + esc(fmtDay(d.key)) + '</td><td>' + esc(pairs || "—") + '</td><td class="num">' + (d.worked ? hrs(d.worked) : "") + '</td><td class="num">' + (c("pto") ? hrs(c("pto")) : "") + '</td><td class="num">' + (c("sick") ? hrs(c("sick")) : "") + '</td><td class="num">' + (c("holiday") ? hrs(c("holiday")) : "") + '</td><td>' + esc(notes) + '</td></tr>';
+        }).join("") + '</tbody><tfoot><tr><td colspan="2">Regular ' + hrs(w.reg) + ' · Overtime ' + hrs(w.ot) + (w.ot ? (w.otStatus === "approved" ? " (approved)" : " (not approved)") : "") + '</td><td class="num">' + hrs(w.worked) + '</td><td class="num">' + hrs(w.pto) + '</td><td class="num">' + hrs(w.sick) + '</td><td class="num">' + hrs(w.holiday) + '</td><td><b>' + hrs(w.total) + ' paid</b></td></tr></tfoot></table></div>';
+    }
+    h += '</section>';
+  }
+  return h;
+}
+function reportCsv(R, detail) {
+  const rows = [["Masterpiece Construction Experts time card summary", rangeText(R.from, R.to)], ["Pay weeks counted by their week-ending Friday"], [],
+    ["Employee", "Position", "Regular hours", "Overtime hours", "PTO used", "Sick used", "Holiday hours", "Total paid hours", "PTO earned", "Sick earned", "PTO left", "Sick left", "Weeks with hours"]];
+  for (const p of R.people) rows.push([fullName(p.emp), p.emp.position || "", hrs(p.reg), hrs(p.ot), hrs(p.pto), hrs(p.sick), hrs(p.holiday), hrs(p.total), hrs(p.ptoEarned), hrs(p.sickEarned), hrs(p.ptoLeft), hrs(p.sickLeft), p.weeksWorked]);
+  const T = R.totals; rows.push(["All employees", "", hrs(T.reg), hrs(T.ot), hrs(T.pto), hrs(T.sick), hrs(T.holiday), hrs(T.total), hrs(T.ptoEarned), hrs(T.sickEarned)]);
+  if (detail) {
+    rows.push([], ["Day by day"], ["Employee", "Week ending", "Date", "Times in and out", "Worked", "PTO", "Sick", "Holiday", "Notes"]);
+    for (const p of R.people) for (const w of p.ws) for (const d of w.days) {
+      if (!d.pairs.length && !d.entries.length) continue;
+      const c = (k) => d.entries.filter(x => x.cat === k).reduce((a, x) => a + x.hours, 0);
+      rows.push([fullName(p.emp), fridayOf(w.wk), d.key, d.pairs.map(pr => (pr.in ? fmtTime(pr.in.at) : "?") + "-" + (pr.out ? fmtTime(pr.out.at) : "?")).join("; "), hrs(d.worked), hrs(c("pto")), hrs(c("sick")), hrs(c("holiday")), d.issues.length ? "Missed punch" : ""]);
+    }
+  }
+  return rows.map(r => r.map(csvCell).join(",")).join("\r\n") + "\r\n";
+}
+async function viewReport(opts) {
+  if (!S.emp || !S.emp.admin) return go("home");
+  view().innerHTML = navBar("settings") + '<div class="card"><div class="busy"><span class="spin"></span>Putting the summary together…</div></div>';
+  wireNav();
+  const R = await buildReport(opts);
+  view().innerHTML = navBar("settings") +
+    '<div class="page-head no-print"><button class="btn btn-text" type="button" id="back">← Settings</button><div class="row"><button class="btn btn-secondary" type="button" id="rcsv">Download spreadsheet</button><button class="btn btn-primary" type="button" id="rprint">Print</button></div></div>' +
+    '<div class="card report">' + reportHtml(R, opts.detail) + '</div>';
+  wireNav();
+  $("#back").addEventListener("click", () => go("manage", { tab: "settings", open: "report" }));
+  $("#rprint").addEventListener("click", () => {
+    let area = $("#print-area"); if (!area) { area = document.createElement("div"); area.id = "print-area"; document.body.appendChild(area); }
+    area.innerHTML = '<div class="report">' + reportHtml(R, opts.detail) + '</div>';
+    document.body.classList.add("printing");
+    const done = () => { document.body.classList.remove("printing"); window.removeEventListener("afterprint", done); };
+    window.addEventListener("afterprint", done);
+    setTimeout(() => { window.print(); setTimeout(done, 1500); }, 300);
+  });
+  $("#rcsv").addEventListener("click", () => download("Time card summary " + R.from + " to " + R.to + ".csv", reportCsv(R, opts.detail)));
+  await logChange("Created a time card summary for " + rangeText(R.from, R.to) + (opts.detail ? " (with details)" : ""));
 }
 
 /* ================================================================ start */
@@ -1664,13 +2214,26 @@ function paneSettingsCore(P) {
   $("#foot").textContent = "Masterpiece Time Clock · Version " + APP_VERSION;
   if ("serviceWorker" in navigator && location.protocol === "https:" && !inArtifact) navigator.serviceWorker.register("sw.js").catch(() => {});
   try {
-    const st = await initStore();
-    if (st === "permission") return viewPermission();
-    if (st === "setup") return viewChooseFolder();
+    const h = location.hash.replace(/^#/, "");
+    const clearHash = () => { try { history.replaceState(null, "", location.pathname + location.search); } catch (_) {} };
+    let m;
+    if (h === "owner") { clearHash(); return viewOwner(); }
+    if ((m = /^connect=(.+)$/.exec(h))) {           // the owner, right after deploying the server
+      const url = decodeURIComponent(m[1]); if (Conn.url !== url) { Conn.url = url; delete Conn.dev; saveConn(); }
+      clearHash(); return viewOwnerSetup();
+    }
+    if ((m = /^join=([^~]+)~([A-Za-z0-9]+)$/.exec(h))) {   // an invite link
+      const url = decodeURIComponent(m[1]); if (Conn.url !== url) { Conn.url = url; delete Conn.dev; saveConn(); }
+      clearHash(); return viewJoin(m[2]);
+    }
+    if (MOCK && !Conn.dev) {                          // the preview starts as if the manager link was just opened
+      Conn.url = "mock"; saveConn();
+      try { const r = await api("setup"); return viewJoin(r.code); } catch (_) { return viewNotConnected("Preview: this browser isn't connected."); }
+    }
     await enterApp();
   } catch (e) { showError(e); }
 })();
-if (params.get("storage") === "browser") window.__tc = { D, S, computeWeek, weekOf, addEvent };
+if (MOCK) window.__tc = { D, S, computeWeek, weekOf, addEvent, api, syncNow, Mirror, Conn };
 })();
 
 </script>

@@ -1,0 +1,398 @@
+/* ================================================================================================
+   Masterpiece Time Clock: the private server.
+   The same code runs in two places:
+     - Google Apps Script (the real thing), with records kept in a Google Sheet in the owner's account;
+     - the browser preview and the automated tests, with records kept in the browser.
+   It decides who may read and change what. Passwords are checked here, never on the computer.
+   ================================================================================================ */
+var MPC_SERVER_VERSION = 1;
+
+/* ---------- SHA-256 (plain JavaScript, so it gives the same answer everywhere) ---------- */
+function mpcSha256(ascii) {
+  var utf8 = unescape(encodeURIComponent(ascii));
+  var K = [], H = [], isComposite = {}, i, j;
+  for (var c = 2, n = 0; n < 64; c++) {
+    if (!isComposite[c]) {
+      for (i = 0; i < 313; i += c) isComposite[i] = c;
+      if (n < 8) H[n] = (Math.pow(c, .5) * 4294967296) | 0;
+      K[n++] = (Math.pow(c, 1 / 3) * 4294967296) | 0;
+    }
+  }
+  var words = [], bitLen = utf8.length * 8;
+  utf8 += "\x80";
+  while (utf8.length % 64 - 56) utf8 += "\x00";
+  for (i = 0; i < utf8.length; i++) words[i >> 2] |= utf8.charCodeAt(i) << ((3 - i) % 4) * 8;
+  words[words.length] = (bitLen / 4294967296) | 0;
+  words[words.length] = bitLen;
+  var rot = function (v, a) { return (v >>> a) | (v << (32 - a)); };
+  for (j = 0; j < words.length;) {
+    var w = words.slice(j, j += 16), old = H.slice(0, 8);
+    for (i = 0; i < 64; i++) {
+      var w15 = w[i - 15], w2 = w[i - 2], a = H[0], e = H[4];
+      var t1 = H[7] + (rot(e, 6) ^ rot(e, 11) ^ rot(e, 25)) + ((e & H[5]) ^ (~e & H[6])) + K[i] +
+        (w[i] = i < 16 ? w[i] : (w[i - 16] + (rot(w15, 7) ^ rot(w15, 18) ^ (w15 >>> 3)) + w[i - 7] + (rot(w2, 17) ^ rot(w2, 19) ^ (w2 >>> 10))) | 0);
+      var t2 = (rot(a, 2) ^ rot(a, 13) ^ rot(a, 22)) + ((a & H[1]) ^ (a & H[2]) ^ (H[1] & H[2]));
+      H = [(t1 + t2) | 0].concat(H); H[4] = (H[4] + t1) | 0; H.length = 8;
+    }
+    for (i = 0; i < 8; i++) H[i] = (H[i] + old[i]) | 0;
+  }
+  var out = "";
+  for (i = 0; i < 8; i++) for (j = 3; j + 1; j--) { var b = (H[i] >> (j * 8)) & 255; out += (b < 16 ? "0" : "") + b.toString(16); }
+  return out;
+}
+
+/* env: { now(), rand(nBytes) -> hex, cacheGet(k), cachePut(k, v, seconds), cacheDel(k) }
+   store: { all() -> [{path, data, seq}], get(path) -> {path,data,seq}|null, put(path, dataString) -> seq, del(path) } */
+function MpcServer(store, env) {
+  var PW_ROUNDS = 1500;
+  var SESSION_SECONDS = 4 * 3600;
+
+  function hashPw(pw, salt) { var h = salt + ":" + pw; for (var i = 0; i < PW_ROUNDS; i++) h = mpcSha256(salt + h); return h; }
+  function obj(path) { var r = store.get(path); if (!r) return null; try { return JSON.parse(r.data); } catch (e) { return null; } }
+  function save(path, o) { return store.put(path, JSON.stringify(o)); }
+  function fail(msg, code) { var e = new Error(msg); e.code = code || "bad"; throw e; }
+  function id() { return env.rand(6); }
+  function weekOf(t, tz) { // Monday of the week, as YYYY-MM-DD, in the office's local time
+    var d = new Date(t - (tz || 0) * 60000); var dow = (d.getUTCDay() + 6) % 7;
+    var m = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - dow));
+    return m.getUTCFullYear() + "-" + ("0" + (m.getUTCMonth() + 1)).slice(-2) + "-" + ("0" + m.getUTCDate()).slice(-2);
+  }
+  function dayOf(t, tz) { var d = new Date(t - (tz || 0) * 60000); return d.getUTCFullYear() + "-" + (d.getUTCMonth() + 1) + "-" + d.getUTCDate(); }
+  function config() { return obj("sys/config") || {}; }
+  function employees() { return store.all().filter(function (r) { return /^employees\/[^/]+\.json$/.test(r.path); }).map(function (r) { return JSON.parse(r.data); }); }
+  function emp(eid) { return obj("employees/" + eid + ".json"); }
+  function pub(e) { return e && { id: e.id, first: e.first, last: e.last, position: e.position, admin: !!e.admin, hourly: e.hourly !== false, active: e.active !== false }; }
+
+  /* ---------- devices (each computer or phone that may use the time clock) ---------- */
+  function device(req) {
+    if (!req.dev || !req.dev.id) return null;
+    var d = obj("devices/" + req.dev.id + ".json"); var s = obj("auth/device-" + req.dev.id);
+    if (!d || !s || s.hash !== mpcSha256("dev:" + req.dev.secret)) return null;
+    return d;
+  }
+  function needDevice(req) {
+    var d = device(req); if (!d) fail("This computer isn't connected to the time clock. Open your invite email on it.", "nodevice");
+    if (d.status !== "allowed") fail("This computer is waiting for the manager to allow it.", "pending");
+    return d;
+  }
+  function newDevice(label, status, empId) {
+    var did = id() + id(), secret = env.rand(24);
+    save("devices/" + did + ".json", { id: did, label: String(label || "Computer").slice(0, 80), status: status, emp: empId || null, created: env.now() });
+    save("auth/device-" + did, { hash: mpcSha256("dev:" + secret) });
+    return { id: did, secret: secret };
+  }
+
+  /* ---------- sessions (who is signed in) ---------- */
+  function session(req, managerOnly) {
+    var d = needDevice(req);
+    var s = req.tok && env.cacheGet("s:" + req.tok); if (!s) fail("You were signed out. Please sign in again.", "signedout");
+    s = JSON.parse(s); var e = emp(s.emp);
+    if (!e || e.active === false) fail("This account isn't active.", "signedout");
+    if (d.emp && d.emp !== e.id) fail("This phone belongs to someone else.", "denied");
+    if (managerOnly && !e.admin) fail("Only a manager can do that.", "denied");
+    env.cachePut("s:" + req.tok, JSON.stringify(s), SESSION_SECONDS);
+    return { emp: e, dev: d, admin: !!e.admin };
+  }
+
+  /* ---------- who may read what ---------- */
+  function canRead(u, path, data) {
+    if (/^(auth|sys)\//.test(path)) return false;
+    if (u.admin) return true;
+    var me = u.emp.id;
+    if (path === "settings.json" || /^employees\//.test(path)) return true;
+    var m;
+    if ((m = /^events\/[^/]+\/([^/]+)\//.exec(path))) return m[1] === me || m[1] === "_week";
+    if ((m = /^(balances|notes)\/([^/]+)\//.exec(path))) return m[2] === me;
+    if (/^requests\//.test(path)) { try { return JSON.parse(data).emp === me; } catch (e) { return false; } }
+    return false;
+  }
+  function cleanRow(r) {
+    if (/^settings\.json$/.test(r.path)) { var o = JSON.parse(r.data); delete o.recovery; return { path: r.path, data: JSON.stringify(o), seq: r.seq }; }
+    return { path: r.path, data: r.data, seq: r.seq };
+  }
+
+  /* ---------- who may change what ---------- */
+  function checkWrite(u, path, o, existing, req) {
+    if (/^(auth|sys|devices|invites)\//.test(path)) fail("That can't be changed this way.", "denied");
+    if (u.admin) {
+      if (path === "settings.json" && existing) { var old = JSON.parse(existing.data); if (old.recovery) o.recovery = old.recovery; }
+      if (/^employees\//.test(path)) { delete o.hash; delete o.salt; }
+      return path;
+    }
+    var me = u.emp.id, m;
+    if ((m = /^events\/([^/]+)\/([^/]+)\/([^/]+)$/.exec(path))) {
+      if (m[2] !== me || existing) fail("You can only add to your own time card.", "denied");
+      if (o.type === "punch" && o.how === "clock" && (o.dir === "in" || o.dir === "out")) {          // the server's clock, not the computer's
+        var now = env.now(); o.at = now; o.created = now;
+        return "events/" + weekOf(now, req.tz) + "/" + me + "/" + now + "-" + id() + ".json";
+      }
+      if (o.type === "signoff") return path;
+      fail("Only a manager can change time cards.", "denied");
+    }
+    if ((m = /^requests\/([^/]+)$/.exec(path))) {
+      if (existing || o.emp !== me || o.status !== "pending") fail("Only a manager can decide requests.", "denied");
+      return path;
+    }
+    if ((m = /^notes\/([^/]+)\/([^/]+)$/.exec(path))) {
+      if (m[2] === "read-todos.json") { if (m[1] !== me) fail("That isn't yours.", "denied"); return path; }
+      if (!existing) return path;                               // anyone signed in may send a notification
+      if (m[1] !== me) fail("That isn't yours.", "denied");
+      var prev = JSON.parse(existing.data); prev.read = !!o.read; o.text = prev.text; o.link = prev.link; o.t = prev.t;   // only "read" can change
+      return path;
+    }
+    if (/^change log\//.test(path) && !existing) return path;
+    fail("Only a manager can change that.", "denied");
+  }
+
+  /* ---------- actions ---------- */
+  var A = {};
+  A.hello = function (req) {
+    var d = device(req), c = config();
+    return { ready: !!c.setup, device: d ? { status: d.status, emp: d.emp, label: d.label } : null, hasManager: employees().some(function (e) { return e.admin && e.active !== false; }), version: MPC_SERVER_VERSION };
+  };
+  // The owner's first visit: makes the manager's invite. Works once (or again only while no manager exists yet).
+  A.setup = function (req) {
+    var c = config();
+    if (c.setup && employees().some(function (e) { return e.admin; })) fail("The time clock is already set up.", "denied");
+    var code = env.rand(12);
+    save("invites/" + code, { code: code, role: "manager", phone: false, created: env.now(), used: null });
+    c.setup = c.setup || env.now(); save("sys/config", c);
+    return { code: code };
+  };
+  // Opening an invite link on a computer or phone connects it (office computers wait for the manager to allow them).
+  A.register = function (req) {
+    var inv = obj("invites/" + req.code); if (!inv) fail("This invite link isn't valid. Ask your manager for a new one.", "badinvite");
+    var d = device(req);
+    if (d) return { device: null, status: d.status, invite: { role: inv.role, used: !!inv.used, phone: !!inv.phone, name: inv.name || "" } };
+    var status = (inv.role === "manager" && !inv.used) || inv.phone ? "allowed" : "pending";
+    var dev = newDevice(req.label + (inv.phone ? " (phone)" : ""), status, inv.phone && inv.used ? inv.used : null);
+    if (inv.phone) { var nd = obj("devices/" + dev.id + ".json"); nd.phone = true; save("devices/" + dev.id + ".json", nd); }
+    return { device: dev, status: status, invite: { role: inv.role, used: !!inv.used, phone: !!inv.phone, name: inv.name || "" } };
+  };
+  A.createAccount = function (req) {
+    var d = device(req); if (!d) fail("This computer isn't connected.", "nodevice");
+    var inv = obj("invites/" + req.code); if (!inv) fail("This invite link isn't valid.", "badinvite");
+    if (inv.used) fail("This invite was already used to make an account. Sign in instead.", "used");
+    var first = String(req.first || "").trim(), last = String(req.last || "").trim();
+    if (!first || !last) fail("Type your first and last name.");
+    var pwErr = pwProblem(req.password); if (pwErr) fail(pwErr);
+    if (employees().some(function (e) { return (e.first + " " + e.last).toLowerCase() === (first + " " + last).toLowerCase() && e.active !== false; })) fail("There's already an account with that name.");
+    var isMgr = inv.role === "manager";
+    var e = { id: id() + id(), first: first, last: last, position: String(req.position || (isMgr ? "Office Manager" : "")).trim(), admin: isMgr, hourly: isMgr ? req.hourly !== false : true, active: true, created: env.now(), ptoStart: 0, sickStart: 0 };
+    var salt = env.rand(16);
+    save("employees/" + e.id + ".json", e);
+    save("auth/emp-" + e.id, { salt: salt, hash: hashPw(req.password, salt), mustChange: false });
+    inv.used = e.id; inv.usedAt = env.now(); save("invites/" + inv.code, inv);
+    if (inv.phone) { d.emp = e.id; d.status = "allowed"; save("devices/" + d.id + ".json", d); }
+    if (isMgr && !obj("settings.json")) {
+      var s = req.settings || {}; var recovery = null;
+      if (req.recovery) { var rs = env.rand(16); recovery = { salt: rs, hash: mpcSha256(rs + ":" + String(req.recovery).toUpperCase().replace(/[^A-Z0-9]/g, "")) }; }
+      save("settings.json", { created: env.now(), round: 0, holidays: s.holidays || [], accrual: s.accrual || {}, recovery: recovery });
+    }
+    return { emp: pub(e) };
+  };
+  A.board = function (req) {
+    var d = needDevice(req);
+    var list = employees().filter(function (e) { return e.active !== false && (d.phone ? e.id === d.emp : (!d.emp || e.id === d.emp)); });
+    var now = env.now(), wk = weekOf(now, req.tz), prev = weekOf(now - 7 * 864e5, req.tz);
+    var rows = store.all();
+    return { device: { emp: d.emp, label: d.label, phone: !!d.phone }, people: list.map(function (e) {
+      var evs = rows.filter(function (r) { return r.path.indexOf("events/" + wk + "/" + e.id + "/") === 0 || r.path.indexOf("events/" + prev + "/" + e.id + "/") === 0; })
+        .map(function (r) { var o = JSON.parse(r.data); o.id = r.path.split("/").pop().replace(/\.json$/, ""); return o; });
+      var voided = {}, moved = {};
+      evs.forEach(function (v) { if (v.type === "void") voided[v.target] = 1; if (v.type === "move") moved[v.target] = v.at; });
+      var ps = evs.filter(function (v) { return v.type === "punch" && !voided[v.id]; }).map(function (v) { return { dir: v.dir, at: moved[v.id] != null ? moved[v.id] : v.at }; }).sort(function (a, b) { return a.at - b.at; });
+      var last = ps[ps.length - 1];
+      var unread = rows.filter(function (r) { return r.path.indexOf("notes/" + e.id + "/") === 0 && !/read-todos/.test(r.path) && !JSON.parse(r.data).read; }).length;
+      return Object.assign(pub(e), { inSince: last && last.dir === "in" && dayOf(last.at, req.tz) === dayOf(now, req.tz) ? last.at : null, unread: unread });
+    }) };
+  };
+  A.login = function (req) {
+    var d = needDevice(req);
+    var e = emp(req.emp); if (!e || e.active === false) fail("That account isn't active.");
+    if (d.emp && d.emp !== e.id) fail("This phone belongs to someone else.", "denied");
+    var a = obj("auth/emp-" + e.id);
+    var tries = Number(env.cacheGet("try:" + e.id) || 0);
+    if (tries >= 8) fail("Too many wrong passwords. Wait 10 minutes and try again.", "locked");
+    if (!a || hashPw(String(req.password || ""), a.salt) !== a.hash) { env.cachePut("try:" + e.id, String(tries + 1), 600); fail("That password isn't right. Try again.", "badpw"); }
+    env.cacheDel("try:" + e.id);
+    var tok = env.rand(24);
+    env.cachePut("s:" + tok, JSON.stringify({ emp: e.id, dev: d.id }), SESSION_SECONDS);
+    return { tok: tok, emp: e, mustChange: !!a.mustChange, now: env.now() };
+  };
+  A.logout = function (req) { if (req.tok) env.cacheDel("s:" + req.tok); return {}; };
+  A.changePassword = function (req) {
+    var u = session(req); var a = obj("auth/emp-" + u.emp.id);
+    if (!a.mustChange && hashPw(String(req.old || ""), a.salt) !== a.hash) fail("Your current password isn't right.", "badpw");
+    var err = pwProblem(req.password); if (err) fail(err);
+    var salt = env.rand(16); save("auth/emp-" + u.emp.id, { salt: salt, hash: hashPw(req.password, salt), mustChange: false });
+    return {};
+  };
+  A.resetPassword = function (req) {
+    var u = session(req, true); var e = emp(req.emp); if (!e) fail("Not found.");
+    var temp = String(req.temp || ""); if (temp.length < 6) fail("The temporary password needs at least 6 characters.");
+    var salt = env.rand(16); save("auth/emp-" + e.id, { salt: salt, hash: hashPw(temp, salt), mustChange: true });
+    return {};
+  };
+  A.recover = function (req) {         // a manager who forgot their password uses the recovery code
+    needDevice(req);
+    var s = obj("settings.json"); var e = emp(req.emp);
+    if (!s || !s.recovery || !e || !e.admin) fail("That recovery code isn't right.", "badcode");
+    var code = String(req.code || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (mpcSha256(s.recovery.salt + ":" + code) !== s.recovery.hash) fail("That recovery code isn't right.", "badcode");
+    var err = pwProblem(req.password); if (err) fail(err);
+    var salt = env.rand(16); save("auth/emp-" + e.id, { salt: salt, hash: hashPw(req.password, salt), mustChange: false });
+    return {};
+  };
+  A.setRecovery = function (req) {
+    session(req, true); var s = obj("settings.json") || {};
+    var rs = env.rand(16); s.recovery = { salt: rs, hash: mpcSha256(rs + ":" + String(req.code || "").toUpperCase().replace(/[^A-Z0-9]/g, "")) };
+    save("settings.json", s); return {};
+  };
+  A.addEmployee = function (req) {      // manager adds someone without an invite (temporary password)
+    var u = session(req, true);
+    var e = req.e || {}; var first = String(e.first || "").trim(), last = String(e.last || "").trim();
+    if (!first || !last) fail("Type a first and last name.");
+    var temp = String(req.temp || ""); if (temp.length < 6) fail("The temporary password needs at least 6 characters.");
+    var n = { id: id() + id(), first: first, last: last, position: String(e.position || "").trim(), admin: !!e.admin, hourly: e.hourly !== false, active: true, created: env.now(), ptoStart: 0, sickStart: 0 };
+    var salt = env.rand(16);
+    save("employees/" + n.id + ".json", n); save("auth/emp-" + n.id, { salt: salt, hash: hashPw(temp, salt), mustChange: true });
+    return { emp: n };
+  };
+  A.invite = function (req) {
+    session(req, true);
+    var code = env.rand(12);
+    var inv = { code: code, role: req.role === "manager" ? "manager" : req.role === "device" ? "device" : "employee", phone: !!req.phone, name: String(req.name || "").slice(0, 60), created: env.now(), used: null };
+    if (inv.role === "device") inv.used = "device";
+    save("invites/" + code, inv);
+    return { code: code };
+  };
+  A.devices = function (req) {
+    session(req, true);
+    return { devices: store.all().filter(function (r) { return /^devices\//.test(r.path); }).map(function (r) { return JSON.parse(r.data); }),
+      invites: store.all().filter(function (r) { return /^invites\//.test(r.path); }).map(function (r) { var o = JSON.parse(r.data); return { code: o.code, role: o.role, phone: o.phone, name: o.name, created: o.created, used: o.used }; }) };
+  };
+  A.decideDevice = function (req) {
+    session(req, true); var d = obj("devices/" + req.id + ".json"); if (!d) fail("Not found.");
+    if (req.remove) { store.del("devices/" + d.id + ".json"); store.del("auth/device-" + d.id); return {}; }
+    d.status = req.allow ? "allowed" : "denied"; if (req.label) d.label = String(req.label).slice(0, 80);
+    save("devices/" + d.id + ".json", d); return { device: d };
+  };
+  A.sync = function (req) {
+    var u = session(req); var since = Number(req.since || 0); var top = 0;
+    var rows = store.all().filter(function (r) { if (r.seq > top) top = r.seq; return r.seq > since && canRead(u, r.path, r.data); }).map(cleanRow).map(function (r) {
+      if (!u.admin && /^events\/[^/]+\/_week\//.test(r.path)) { var o = JSON.parse(r.data); delete o.snapshot; r.data = JSON.stringify(o); }   // others' paid hours stay private
+      return r;
+    });
+    return { rows: rows, seq: top, me: u.emp, now: env.now() };
+  };
+  A.put = function (req) {
+    var u = session(req);
+    var path = String(req.path || ""); if (!/^[A-Za-z0-9 _.\-/]+$/.test(path) || path.indexOf("..") >= 0) fail("Bad name.");
+    var o = req.data; if (typeof o !== "object" || o === null) fail("Bad data.");
+    var existing = store.get(path);
+    if (req.mode === "create" && existing) fail("That already exists.", "exists");
+    var finalPath = checkWrite(u, path, o, existing, req);
+    if (finalPath !== path && store.get(finalPath)) fail("Please try again.", "exists");
+    var seq = save(finalPath, o);
+    return { path: finalPath, data: JSON.stringify(o), seq: seq };
+  };
+  A.backup = function (req) {
+    session(req, true);
+    return { rows: store.all().filter(function (r) { return !/^(auth|sys)\//.test(r.path); }).map(cleanRow), made: env.now() };
+  };
+
+  function pwProblem(a) {
+    a = String(a || "");
+    return a.length < 8 ? "The password needs at least 8 characters."
+      : !/[A-Z]/.test(a) ? "The password needs at least one uppercase letter (A–Z)."
+      : !/[a-z]/.test(a) ? "The password needs at least one lowercase letter (a–z)."
+      : !/[^A-Za-z0-9]/.test(a) ? "The password needs at least one special character, like ! # $ or ?." : "";
+  }
+
+  return {
+    handle: function (req) {
+      try {
+        var f = A[req && req.a]; if (!f) fail("Unknown request.");
+        return { ok: true, r: f(req) };
+      } catch (e) { return { ok: false, error: e.message || String(e), code: e.code || "error" }; }
+    },
+    weekOf: weekOf,
+  };
+}
+
+
+/* ================================================================================================
+   Google Apps Script glue. Paste this whole file into a new Apps Script project, then
+   Deploy → New deployment → Web app (Execute as: Me · Who has access: Anyone).
+   Records are kept in a private Google Sheet in YOUR Google account. Nobody else can open it.
+   ================================================================================================ */
+function mpcSheet_() {
+  var props = PropertiesService.getScriptProperties(), cache = CacheService.getScriptCache();
+  var sid = cache.get("SHEET_ID") || props.getProperty("SHEET_ID"), ss = null;
+  if (sid) { try { ss = SpreadsheetApp.openById(sid); } catch (e) { ss = null; } }
+  if (!ss) {
+    ss = SpreadsheetApp.create("Masterpiece Time Clock (private data, do not edit)");
+    var sh = ss.getSheets()[0]; sh.setName("data"); sh.getRange(1, 1, 1, 4).setValues([["path", "data", "seq", "updated"]]); sh.setFrozenRows(1);
+    props.setProperty("SHEET_ID", ss.getId());
+  }
+  cache.put("SHEET_ID", ss.getId(), 21600);
+  return ss.getSheetByName("data");
+}
+function mpcStore_() {
+  var sh = mpcSheet_(), rows = null, index = null, props = PropertiesService.getScriptProperties();
+  function load() {
+    if (rows) return;
+    var n = sh.getLastRow(); rows = []; index = {};
+    if (n > 1) sh.getRange(2, 1, n - 1, 3).getValues().forEach(function (v, i) { if (v[0]) { rows.push({ path: String(v[0]), data: String(v[1]), seq: Number(v[2]), row: i + 2 }); index[v[0]] = rows[rows.length - 1]; } });
+  }
+  function nextSeq() { var s = Number(props.getProperty("SEQ") || 0) + 1; props.setProperty("SEQ", String(s)); return s; }
+  return {
+    all: function () { load(); return rows; },
+    get: function (p) { load(); return index[p] || null; },
+    put: function (p, data) {
+      load(); var seq = nextSeq(); var r = index[p];
+      if (data.length > 49000) throw new Error("That record is too large.");
+      if (r) { sh.getRange(r.row, 2, 1, 3).setValues([[data, seq, new Date()]]); r.data = data; r.seq = seq; }
+      else { sh.appendRow([p, data, seq, new Date()]); r = { path: p, data: data, seq: seq, row: sh.getLastRow() }; rows.push(r); index[p] = r; }
+      return seq;
+    },
+    del: function (p) { load(); var r = index[p]; if (!r) return; sh.deleteRow(r.row); rows = null; index = null; },
+  };
+}
+function mpcEnv_() {
+  var cache = CacheService.getScriptCache();
+  return {
+    now: function () { return Date.now(); },
+    rand: function (n) { var s = ""; while (s.length < n * 2) s += Utilities.getUuid().replace(/-/g, ""); return s.slice(0, n * 2); },
+    cacheGet: function (k) { return cache.get(k); },
+    cachePut: function (k, v, sec) { cache.put(k, v, sec); },
+    cacheDel: function (k) { cache.remove(k); },
+  };
+}
+var MPC_READ_ONLY = { hello: 1, board: 1, sync: 1, devices: 1, backup: 1, logout: 1, login: 1 };
+function doPost(e) {
+  var lock = null, out;
+  try {
+    var req = JSON.parse(e.postData.contents);
+    if (!MPC_READ_ONLY[req.a]) {
+      lock = LockService.getScriptLock();
+      if (!lock.tryLock(25000)) return mpcJson_({ ok: false, error: "The time clock is busy. Try again in a moment.", code: "busy" });
+    }
+    out = MpcServer(mpcStore_(), mpcEnv_()).handle(req);
+  } catch (err) { out = { ok: false, error: "The time clock server had a problem: " + (err && err.message || err), code: "server" }; }
+  finally { if (lock) { try { lock.releaseLock(); } catch (x) {} } }
+  return mpcJson_(out);
+}
+function mpcJson_(out) {
+  return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
+}
+function doGet() {
+  return ContentService.createTextOutput("Masterpiece Time Clock server is running. Open the time clock at https://twbcode.github.io/masterpiece-timeclock/");
+}
+/* Run this from the editor (select it, then Run) if the manager link is ever lost. It's printed in the log. */
+function makeManagerInvite() {
+  var r = MpcServer(mpcStore_(), mpcEnv_()).handle({ a: "setup" });
+  var url = ScriptApp.getService().getUrl();
+  Logger.log(r.ok ? "Manager link: https://twbcode.github.io/masterpiece-timeclock/#join=" + encodeURIComponent(url) + "~" + r.r.code : r.error);
+}
