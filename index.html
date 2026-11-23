@@ -342,6 +342,8 @@ details.acc[open] .acc-chev { transform: rotate(90deg); }
 .acc-body { padding: 0 2px 20px; display: grid; gap: 14px; }
 .acc-body > .card { border: none; box-shadow: none; padding: 0; background: none; }
 .acc-body > .card > .card-head h3 { display: none; }
+.steps-list { margin: 0; padding-left: 22px; display: grid; gap: 8px; }
+.steps-list li { padding-left: 4px; }
 
 </style>
 
@@ -374,7 +376,7 @@ details.acc[open] .acc-chev { transform: rotate(90deg); }
 (() => {
 "use strict";
 /* ================================================================ basics */
-const APP_VERSION = "1.2.1";
+const APP_VERSION = "1.2.2";
 const ROOT_NAME = "Masterpiece Time Clock";
 const SEAL_SALT = "mpc-timeclock-seal-v1";
 const OT_LIMIT = 40;                       // hours worked in a week before overtime
@@ -874,12 +876,17 @@ $("#sign-out").addEventListener("click", () => signOut());
 
 /* ================================================================ first run */
 function viewChooseFolder() {
-  view().innerHTML = '<div class="narrow"><div class="card">' +
-    '<div class="card-head"><span class="section-title">Set up this computer</span><h2>Where should time cards be kept?</h2>' +
-    '<p class="muted">Choose the shared <b>Google Drive</b> folder that every office computer can see. The program makes a <b>' + ROOT_NAME + '</b> folder inside it. Every clock-in and time card is saved there, and Google Drive keeps the computers in step.</p></div>' +
-    (Store.canFolder ? '<button class="btn btn-primary btn-lg btn-block" type="button" id="pick">Choose the Google Drive folder</button>' +
-      '<p class="hint">Use the same folder on all 3 computers. When the browser asks, choose <b>Edit files</b> or <b>Allow</b>.</p>'
-      : '<div class="note warn">Saving to a shared folder needs Chrome or Edge on a computer.</div><button class="btn btn-secondary btn-block" type="button" id="browser">Try it in this browser only</button>') +
+  view().innerHTML = '<div class="narrow" style="max-width:600px"><div class="card">' +
+    '<div class="card-head"><span class="section-title">Set up this computer</span><h2>Choose the shared Google Drive folder</h2>' +
+    '<p class="muted">Time cards are saved in Google Drive so every office computer sees the same ones. The program makes a <b>' + ROOT_NAME + '</b> folder inside the folder you pick.</p></div>' +
+    (Store.canFolder ? '<ol class="steps-list"><li>Click <b>Choose folder</b> below. A folder window opens. That\'s normal: Google Drive shows up inside it.</li>' +
+      '<li>On the left side of that window, click <b>Google Drive</b>.</li>' +
+      '<li>Open <b>My Drive</b> (or <b>Shared drives</b>), click the <b>Masterpiece</b> folder once, then click <b>Select Folder</b>.</li>' +
+      '<li>When the browser asks, click <b>Edit files</b> or <b>Allow</b>.</li></ol>' +
+      '<button class="btn btn-primary btn-lg btn-block" type="button" id="pick">Choose folder</button>' +
+      '<div class="note warn"><b>Don\'t see Google Drive on the left?</b><span>This computer needs the free <b>Google Drive for desktop</b> app, signed in to the Masterpiece Google account. Install it from google.com/drive/download, then come back and click Choose folder.</span></div>' +
+      '<p class="hint">Use the same folder on every office computer.</p>'
+      : '<div class="note warn">Saving to Google Drive needs Chrome or Edge on a computer.</div><button class="btn btn-secondary btn-block" type="button" id="browser">Try it in this browser only</button>') +
     '</div></div>';
   if ($("#pick")) $("#pick").addEventListener("click", async () => {
     try { await chooseFolder(); } catch (e) { if (e && e.name === "AbortError") return; return showError(e); }
