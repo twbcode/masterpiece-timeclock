@@ -327,6 +327,22 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14.5px; font-vari
 .choice:hover { border-color: var(--accent); background: var(--accent-soft); }
 .choice b { font-size: 16px; }
 
+/* settings: one list of sections that open in place */
+.acc-card { gap: 0; padding: 22px 24px 8px; }
+.acc-card > .card-head { margin-bottom: 10px; }
+details.acc { border-top: 1px solid var(--line); }
+details.acc > summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 2px; }
+details.acc > summary::-webkit-details-marker { display: none; }
+details.acc > summary > div { display: grid; gap: 2px; min-width: 0; }
+details.acc > summary b { font-size: 16.5px; font-weight: 600; }
+details.acc > summary span { font-size: 14px; color: var(--muted); }
+details.acc > summary:hover b { color: var(--accent); }
+.acc-chev { font-size: 22px; color: var(--faint); transition: transform .15s; flex: none; }
+details.acc[open] .acc-chev { transform: rotate(90deg); }
+.acc-body { padding: 0 2px 20px; display: grid; gap: 14px; }
+.acc-body > .card { border: none; box-shadow: none; padding: 0; background: none; }
+.acc-body > .card > .card-head h3 { display: none; }
+
 </style>
 
 <header class="bar">
@@ -358,7 +374,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14.5px; font-vari
 (() => {
 "use strict";
 /* ================================================================ basics */
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.2.1";
 const ROOT_NAME = "Masterpiece Time Clock";
 const SEAL_SALT = "mpc-timeclock-seal-v1";
 const OT_LIMIT = 40;                       // hours worked in a week before overtime
@@ -801,7 +817,7 @@ function paintBar() {
 /* managers get one simple menu: My time · Time cards · Team · Settings */
 function navBar(on) {
   if (!S.emp || !S.emp.admin) return "";
-  const T = (S.emp.hourly !== false ? [["me", "My time"]] : []).concat([["cards", "Time cards"], ["team", "Team"], ["settings", "Settings"]]);
+  const T = (S.emp.hourly !== false ? [["me", "My Time"]] : []).concat([["cards", "Time Cards"], ["team", "Team"], ["settings", "Settings"]]);
   return '<div class="tabs no-print" role="tablist">' + T.map(([k, l]) => '<button class="tab' + (k === on ? " on" : "") + '" type="button" data-nav="' + k + '">' + l + '</button>').join("") + '</div>';
 }
 function wireNav() { $$("[data-nav]").forEach(b => b.addEventListener("click", () => b.dataset.nav === "me" ? go("me") : go("manage", { tab: b.dataset.nav }))); }
@@ -1217,7 +1233,7 @@ async function viewManage(opts = {}) {
     return paneWeek($("#weekpane"), opts.wk || weekOf(new Date()));
   }
   if (tab === "team") return panePeople(P);
-  return paneSettings(P, opts.year || new Date().getFullYear());
+  return paneSettings(P, opts.year || new Date().getFullYear(), opts.open);
 }
 async function paneWeek(P, wk) {
   const hourly = D.emps.filter(e => e.hourly !== false);
@@ -1342,7 +1358,7 @@ async function viewEmpWeek({ id, wk }) {
   const emp = D.emps.find(e => e.id === id); if (!emp) return go("manage");
   const [w, meta, bal] = await Promise.all([weekFor(emp, wk), weekMeta(wk), balances(emp)]);
   const s = meta.lock && meta.lock.snapshot && meta.lock.snapshot[emp.id];
-  view().innerHTML = navBar("cards") + backBtn("All time cards") +
+  view().innerHTML = navBar("cards") + backBtn("All Time Cards") +
     '<div class="card"><div class="page-head"><div><h2>' + esc(fullName(emp)) + '</h2><p class="muted">' + esc(emp.position || "") + '</p></div>' +
     '<button class="btn btn-secondary no-print" type="button" id="print">Print time sheet</button></div>' +
     '<div class="wk-nav no-print"><button class="navbtn" id="prev" aria-label="Previous week">‹</button><div><div class="lbl">' + esc(weekLabel(wk)) + '</div><div class="sub">' + esc(weekRange(wk)) + (meta.locked ? " · Paid / locked" : "") + '</div></div><button class="navbtn" id="next" aria-label="Next week"' + (wk >= weekOf(new Date()) ? " disabled" : "") + '>›</button></div>' +
@@ -1531,11 +1547,11 @@ async function editEmployee(emp) {
 function paneHolidays(P, year) {
   const hs = (D.settings.holidays || []).filter(h => h.date.startsWith(year + "-")).sort((a, b) => a.date.localeCompare(b.date));
   P.innerHTML = '<div class="card"><div class="page-head"><div class="wk-nav"><button class="navbtn" id="py">‹</button><div class="lbl">Paid holidays ' + year + '</div><button class="navbtn" id="ny">›</button></div>' +
-    '<div class="row"><button class="btn btn-secondary" type="button" id="suggest">Add from the usual holidays</button><button class="btn btn-primary" type="button" id="custom">+ Add a holiday</button></div></div>' +
-    '<p class="muted">On a paid holiday, every hourly employee (you included) gets the holiday hours automatically. Changing or removing a holiday here changes it for everyone. To take it off just one person\'s card, open their week and remove it there.</p>' +
+    '<div class="row"><button class="btn btn-secondary" type="button" id="suggest">Add common holidays</button><button class="btn btn-primary" type="button" id="custom">+ Add your own holiday</button></div></div>' +
+    '<p class="muted">Everyone hourly, you included, is paid these hours automatically on each holiday. Changes here apply to everyone. To take a holiday off just one person\'s card, use Edit on that day in their time card.</p>' +
     (hs.length ? '<div class="list">' + hs.map(h => '<div class="item-row"><div><span class="t">' + esc(h.name) + '</span><span class="s">' + esc(fmtLong(h.date)) + ' · ' + hrs(h.hours) + ' h</span></div><div class="row"><button class="linke" data-edit-hol="' + h.id + '">Change</button><button class="linkx" data-del-hol="' + h.id + '">Remove</button></div></div>').join("") + '</div>' : '<p class="muted">No holidays for ' + year + ' yet.</p>') + '</div>';
-  $("#py").addEventListener("click", () => go("manage", { tab: "settings", year: year - 1 }));
-  $("#ny").addEventListener("click", () => go("manage", { tab: "settings", year: year + 1 }));
+  $("#py").addEventListener("click", () =>go("manage", { tab: "settings", open: "hol", year: year - 1 }));
+  $("#ny").addEventListener("click", () =>go("manage", { tab: "settings", open: "hol", year: year + 1 }));
   $$("[data-edit-hol]").forEach(b => b.addEventListener("click", async () => {
     const h = D.settings.holidays.find(x => x.id === b.dataset.editHol); if (!h) return;
     const v = await ask({ title: "Change " + h.name, html: '<div class="field"><label for="cn">Name</label><input type="text" id="cn" value="' + esc(h.name) + '"></div><div class="grid2"><div class="field"><label for="cd">Date</label><input type="date" id="cd" value="' + h.date + '"></div><div class="field"><label for="ch">Hours</label><input type="number" id="ch" value="' + h.hours + '" step="0.25" min="0"></div></div><p class="hint">Changes apply to every employee\'s time card, including yours.</p><p class="err" id="cerr"></p>',
@@ -1545,14 +1561,14 @@ function paneHolidays(P, year) {
     await loadSettings(); const H = D.settings.holidays.find(x => x.id === h.id); if (!H) return;
     H.name = $("#cn").value.trim(); H.date = $("#cd").value; H.hours = Number($("#ch").value) || 0; await saveSettings();
     await logChange("Changed holiday " + before + " to " + H.name + " (" + fmtDate(H.date) + ", " + hrs(H.hours) + " h)");
-    go("manage", { tab: "settings", year: +H.date.slice(0, 4) });
+   go("manage", { tab: "settings", open: "hol", year: +H.date.slice(0, 4) });
   }));
   $$("[data-del-hol]").forEach(b => b.addEventListener("click", async () => {
     const h = D.settings.holidays.find(x => x.id === b.dataset.delHol);
     const v = await ask({ title: "Remove " + h.name + "?", text: "Its hours come off everyone's time card for " + fmtDay(h.date) + ".", buttons: [{ label: "Cancel", value: false }, { label: "Remove", value: true, kind: "btn-danger-solid" }] });
     if (!v) return;
     await loadSettings(); D.settings.holidays = D.settings.holidays.filter(x => x.id !== h.id); await saveSettings(); await logChange("Removed holiday " + h.name + " (" + fmtDate(h.date) + ")");
-    go("manage", { tab: "settings", year });
+   go("manage", { tab: "settings", open: "hol", year });
   }));
   $("#suggest").addEventListener("click", async () => {
     const v = await ask({ title: "Usual holidays for " + year, wide: true, html: '<div class="field" style="max-width:220px"><label for="sh">Hours for each</label><input type="number" id="sh" value="8" step="0.25" min="0"></div>' + holidayChecklist(year, hs),
@@ -1561,7 +1577,7 @@ function paneHolidays(P, year) {
     const add = readChecklist($(".hol-list", dlg) || $(".hol-list"), Number($("#sh").value) || 8);
     await loadSettings(); D.settings.holidays = (D.settings.holidays || []).concat(add); await saveSettings();
     if (add.length) await logChange("Added holidays: " + add.map(h => h.name).join(", ") + " (" + year + ")");
-    go("manage", { tab: "settings", year });
+   go("manage", { tab: "settings", open: "hol", year });
   });
   $("#custom").addEventListener("click", async () => {
     const v = await ask({ title: "Add a holiday", html: '<div class="field"><label for="cn">Name</label><input type="text" id="cn" placeholder="Company picnic"></div><div class="grid2"><div class="field"><label for="cd">Date</label><input type="date" id="cd"></div><div class="field"><label for="ch">Hours</label><input type="number" id="ch" value="8" step="0.25" min="0"></div></div><p class="err" id="cerr"></p>',
@@ -1569,7 +1585,7 @@ function paneHolidays(P, year) {
     if (!v) return;
     const h = { id: uid(), name: $("#cn").value.trim(), date: $("#cd").value, hours: Number($("#ch").value) || 0 };
     await loadSettings(); D.settings.holidays = (D.settings.holidays || []).concat([h]); await saveSettings(); await logChange("Added holiday " + h.name + " (" + fmtDate(h.date) + ", " + hrs(h.hours) + " h)");
-    go("manage", { tab: "settings", year: +h.date.slice(0, 4) });
+   go("manage", { tab: "settings", open: "hol", year: +h.date.slice(0, 4) });
   });
 }
 async function paneLog(P) {
@@ -1577,27 +1593,43 @@ async function paneLog(P) {
   P.innerHTML = '<div class="card"><div class="card-head"><h3>Change log</h3><p class="muted">Every change made by a manager, newest first. Entries can\'t be changed in the program.</p></div>' +
     (L.length ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead><tbody>' + L.map(x => '<tr><td style="white-space:nowrap">' + esc(fmtStamp(x.t)) + '</td><td>' + esc(nameOf(x.by)) + '</td><td>' + esc(x.text) + (x._tampered ? ' <span class="tag bad">edited outside</span>' : "") + '</td></tr>').join("") + '</tbody></table></div>' : '<p class="muted">Nothing yet.</p>') + '</div>';
 }
-async function paneSettings(P, year) {
-  P.innerHTML = '<div id="s-hol" style="display:grid;gap:18px"></div><div id="s-core" style="display:grid;gap:18px"></div>' +
-    '<div class="card"><div class="page-head"><div class="card-head"><h3>Change log</h3><p class="muted">Every change a manager made, newest first.</p></div><button class="btn btn-secondary" type="button" id="show-log">Show</button></div><div id="s-log"></div></div>';
-  paneHolidays($("#s-hol"), year);
+async function paneSettings(P, year, open) {
+  const y = new Date().getFullYear();
+  const nHol = (D.settings.holidays || []).filter(h => h.date.startsWith(year + "-")).length;
+  const r = Number(D.settings.round) || 0;
+  const SEC = [
+    ["hol", "Paid holidays", nHol + " paid holiday" + (nHol === 1 ? "" : "s") + " in " + year + ". Add, change or remove holidays."],
+    ["log", "Change history", "See every change a manager has made to time cards, holidays and settings."],
+    ["earn", "PTO and sick leave earned", "PTO: " + describeRule(accrualRule("pto")) + " · Sick: " + describeRule(accrualRule("sick"))],
+    ["round", "Rounding clock times", r ? "Counted to the nearest " + r + " minutes" : "Counted exactly, to the minute"],
+    ["code", "Manager password recovery code", "Make a new code if the one from setup is lost."],
+    ["folder", "Where time cards are saved", Store.mode === "folder" ? "The " + Store.root.name + " folder in Google Drive" : "This browser only (preview)"],
+  ];
+  P.innerHTML = '<div class="card acc-card"><div class="card-head"><h2>Settings</h2><p class="muted">Tap a setting to open it.</p></div>' +
+    SEC.map(([k, t, d]) => '<details class="acc" data-acc-sec="' + k + '"' + (open === k ? " open" : "") + '><summary><div><b>' + esc(t) + '</b><span>' + esc(d) + '</span></div><span class="acc-chev" aria-hidden="true">›</span></summary><div class="acc-body" id="sec-' + k + '"></div></details>').join("") + '</div>' +
+    '<div id="s-core" hidden></div>';
+  paneHolidays($("#sec-hol"), year);
   paneSettingsCore($("#s-core"));
-  $("#show-log").addEventListener("click", async () => { $("#show-log").hidden = true; const box = document.createElement("div"); await paneLog(box); const t = $(".tbl-wrap", box) || $("p.muted", box); $("#s-log").appendChild(t || box); });
+  for (const k of ["earn", "round", "code", "folder"]) { const c = $('#s-core [data-sec="' + k + '"]'); if (c) $("#sec-" + k).appendChild(c); }
+  let logDone = false;
+  const loadLogNow = async () => { if (logDone) return; logDone = true; const box = document.createElement("div"); await paneLog(box); $("#sec-log").appendChild($(".tbl-wrap", box) || $("p.muted", box) || box); };
+  $$("details.acc").forEach(d => d.addEventListener("toggle", () => { if (d.open) { current.open = d.dataset.accSec; if (d.dataset.accSec === "log") loadLogNow(); } }));
+  if (open === "log") loadLogNow();
 }
 function paneSettingsCore(P) {
   const r = Number(D.settings.round) || 0;
-  P.innerHTML = '<div class="card"><div class="card-head"><h3>Rounding</h3><p class="muted">How clock times are counted. The exact times are always kept.</p></div>' +
+  P.innerHTML = '<div class="card" data-sec="round"><div class="card-head"><h3>Rounding</h3><p class="muted">Choose how clock-in and clock-out times are counted toward hours. The exact times are always kept on the time card.</p></div>' +
     '<div class="field" style="max-width:320px"><select id="round"><option value="0"' + (r === 0 ? " selected" : "") + '>Exact, to the minute</option><option value="5"' + (r === 5 ? " selected" : "") + '>Nearest 5 minutes</option><option value="15"' + (r === 15 ? " selected" : "") + '>Nearest 15 minutes</option></select></div></div>' +
-    '<div class="card"><div class="card-head"><h3>PTO and sick leave earned</h3><p class="muted">How time off builds up. Earned hours are added to each balance when you lock a week for payroll. You can turn it off for one person in Employees.</p></div>' +
+    '<div class="card" data-sec="earn"><div class="card-head"><h3>PTO and sick leave earned</h3><p class="muted">Choose how each person\'s PTO and sick time builds up. Earned hours are added to their balance each time you lock a week for payroll. To stop it for one person, open them in Team.</p></div>' +
     ["pto", "sick"].map(cat => { const a = accrualRule(cat); return '<div class="opt" data-acc="' + cat + '"><b>' + (cat === "pto" ? "PTO" : "Sick leave") + '</b>' +
       '<div class="grid2"><div class="field"><label>How it builds up</label><select data-k="mode"><option value="none"' + (a.mode === "none" ? " selected" : "") + '>Doesn\'t build up (add by hand)</option><option value="week"' + (a.mode === "week" ? " selected" : "") + '>A set number of hours each week</option><option value="hours"' + (a.mode === "hours" ? " selected" : "") + '>Hours for every so many hours worked</option></select></div>' +
       '<div class="field"><label>Hours earned</label><input type="number" data-k="amount" step="0.01" min="0" value="' + (a.amount || "") + '"></div>' +
       '<div class="field" data-show="hours"><label>For every … hours worked</label><input type="number" data-k="per" step="0.25" min="1" value="' + (a.per || 40) + '"></div>' +
       '<div class="field"><label>Most a balance can reach (blank = no limit)</label><input type="number" data-k="max" step="0.25" min="0" value="' + (a.max || "") + '"></div></div></div>'; }).join("") +
-    '<div><button class="btn btn-primary" type="button" id="acc-save">Save</button></div></div>' +
-    '<div class="card"><div class="card-head"><h3>Shared folder</h3><p class="muted">' + (Store.mode === "folder" ? 'This computer saves to the <b>' + esc(Store.root.name) + '</b> folder.' : 'This preview saves in this browser only.') + ' Every office computer should use the same Google Drive folder.</p></div>' +
+    '<div><button class="btn btn-primary" type="button" id="acc-save">Save time off settings</button></div></div>' +
+    '<div class="card" data-sec="folder"><div class="card-head"><h3>Shared folder</h3><p class="muted">' + (Store.mode === "folder" ? 'This computer saves to the <b>' + esc(Store.root.name) + '</b> folder.' : 'This preview saves in this browser only.') + ' Every office computer should use the same Google Drive folder.</p></div>' +
     (Store.canFolder ? '<div><button class="btn btn-secondary" type="button" id="folder">Use a different folder</button></div>' : "") + '</div>' +
-    '<div class="card"><div class="card-head"><h3>Manager recovery code</h3><p class="muted">Lets a manager reset their own password if it\'s forgotten. Making a new code stops the old one from working.</p></div><div><button class="btn btn-secondary" type="button" id="recode">Make a new recovery code</button></div></div>' +
+    '<div class="card" data-sec="code"><div class="card-head"><h3>Manager recovery code</h3><p class="muted">The code you wrote down at setup lets a manager reset a forgotten password. If it\'s lost, make a new one here. The old code stops working.</p></div><div><button class="btn btn-secondary" type="button" id="recode">Make a new recovery code</button></div></div>' +
     '';
   const showPer = () => $$("[data-acc]").forEach(b => { $('[data-show="hours"]', b).hidden = $('[data-k="mode"]', b).value !== "hours"; });
   $$('[data-k="mode"]').forEach(x => x.addEventListener("change", showPer)); showPer();
