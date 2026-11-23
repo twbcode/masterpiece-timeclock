@@ -377,6 +377,12 @@ details.acc[open] .acc-chev { transform: rotate(90deg); }
   .report .rp-t { font-size: 10.5px; }
   .card.report { overflow: visible; }
 }
+/* five manager tabs fit on a phone without sideways scrolling */
+@media (max-width: 560px) {
+  .tabs { gap: 0; }
+  .tab { flex: 1 1 auto; justify-content: center; padding: 10px 4px; font-size: 13.5px; }
+}
+@media (max-width: 350px) { .tab { font-size: 12.5px; padding: 10px 2px; } }
 
 </style>
 
@@ -758,7 +764,7 @@ function MpcMockServer(ns) {
 (() => {
 "use strict";
 /* ================================================================ basics */
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.0.1";
 const ROOT_NAME = "Masterpiece Time Clock";
 const SEAL_SALT = "mpc-timeclock-seal-v1";
 const OT_LIMIT = 40;                       // hours worked in a week before overtime
@@ -1158,10 +1164,10 @@ function paintBar() {
   if (!S.emp) { $("#bell-wrap").hidden = true; closeBell(); bellItems = []; }
   w.innerHTML = S.emp ? 'Signed in as <b>' + esc(fullName(S.emp)) + '</b>' : "";
 }
-/* managers get one simple menu: My time · Time cards · Team · Settings */
+/* managers get one simple menu: My Time · Time Cards · Team · Reports · Settings */
 function navBar(on) {
   if (!S.emp || !S.emp.admin) return "";
-  const T = (S.emp.hourly !== false ? [["me", "My Time"]] : []).concat([["cards", "Time Cards"], ["team", "Team"], ["settings", "Settings"]]);
+  const T = (S.emp.hourly !== false ? [["me", "My Time"]] : []).concat([["cards", "Time Cards"], ["team", "Team"], ["reports", "Reports"], ["settings", "Settings"]]);
   return '<div class="tabs no-print" role="tablist">' + T.map(([k, l]) => '<button class="tab' + (k === on ? " on" : "") + '" type="button" data-nav="' + k + '">' + l + '</button>').join("") + '</div>';
 }
 function wireNav() { $$("[data-nav]").forEach(b => b.addEventListener("click", () => b.dataset.nav === "me" ? go("me") : go("manage", { tab: b.dataset.nav }))); }
@@ -1582,7 +1588,7 @@ async function requestFix(emp, wk) {
 /* ================================================================ manage (managers only) */
 async function viewManage(opts = {}) {
   if (!S.emp || !S.emp.admin) return go("home");
-  const tab = ["cards", "team", "settings"].includes(opts.tab) ? opts.tab : "cards";
+  const tab = ["cards", "team", "reports", "settings"].includes(opts.tab) ? opts.tab : "cards";
   await loadEmps();
   view().innerHTML = navBar(tab) + '<div id="pane" style="display:grid;gap:18px"></div>';
   wireNav();
@@ -1597,6 +1603,10 @@ async function viewManage(opts = {}) {
     return paneWeek($("#weekpane"), opts.wk || weekOf(new Date()));
   }
   if (tab === "team") return panePeople(P);
+  if (tab === "reports") {
+    P.innerHTML = '<div class="card"><div class="card-head"><h2>Time card summaries</h2><p class="muted">For taxes, payroll records and year-end: monthly, quarterly, yearly or any dates you pick. Print it or download it as a spreadsheet.</p></div><div id="rform" style="display:grid;gap:16px"></div></div>';
+    return reportForm($("#rform"), opts.last);
+  }
   return paneSettings(P, opts.year || new Date().getFullYear(), opts.open);
 }
 async function paneWeek(P, wk) {
@@ -2005,7 +2015,6 @@ async function paneSettings(P, year, open) {
   const nHol = (D.settings.holidays || []).filter(h => h.date.startsWith(year + "-")).length;
   const r = Number(D.settings.round) || 0;
   const SEC = [
-    ["report", "Create a time card summary", "For taxes and records: monthly, quarterly, yearly or any dates. Print it or download it."],
     ["hol", "Paid holidays", nHol + " paid holiday" + (nHol === 1 ? "" : "s") + " in " + year + ". Add, change or remove holidays."],
     ["log", "Change history", "See every change a manager has made to time cards, holidays and settings."],
     ["earn", "PTO and sick leave earned", "PTO: " + describeRule(accrualRule("pto")) + " · Sick: " + describeRule(accrualRule("sick"))],
@@ -2017,7 +2026,6 @@ async function paneSettings(P, year, open) {
     SEC.map(([k, t, d]) => '<details class="acc" data-acc-sec="' + k + '"' + (open === k ? " open" : "") + '><summary><div><b>' + esc(t) + '</b><span>' + esc(d) + '</span></div><span class="acc-chev" aria-hidden="true">›</span></summary><div class="acc-body" id="sec-' + k + '"></div></details>').join("") + '</div>' +
     '<div id="s-core" hidden></div>';
   paneHolidays($("#sec-hol"), year);
-  reportForm($("#sec-report"));
   paneSettingsCore($("#s-core"));
   for (const k of ["earn", "round", "code", "folder"]) { const c = $('#s-core [data-sec="' + k + '"]'); if (c) $("#sec-" + k).appendChild(c); }
   let logDone = false;
@@ -2079,23 +2087,25 @@ function quickRange(k) {
   }
   return null;
 }
-function reportForm(P) {
+function reportForm(P, last) {
   const picks = [["lastMonth", "Last month"], ["thisMonth", "This month"], ["lastQuarter", "Last quarter"], ["thisQuarter", "This quarter"], ["lastYear", "Last year"], ["thisYear", "This year"], ["custom", "Pick dates"]];
-  const [f0, t0] = quickRange("lastMonth");
-  P.innerHTML = '<p class="muted">Pick the dates, then create the summary. You can print it or download it as a spreadsheet.</p>' +
-    '<div class="field"><label>Dates</label><div class="row" id="picks">' + picks.map(([k, l], i) => '<button class="btn btn-secondary mini' + (i === 0 ? " on-pick" : "") + '" type="button" data-pick="' + k + '">' + l + '</button>').join("") + '</div></div>' +
+  const L = last || {}, pick0 = L.pick || "lastMonth";
+  const [f0, t0] = L.from ? [L.from, L.to] : quickRange("lastMonth");
+  P.innerHTML = '<div class="field"><label>Dates</label><div class="row" id="picks">' + picks.map(([k, l]) => '<button class="btn btn-secondary mini' + (k === pick0 ? " on-pick" : "") + '" type="button" data-pick="' + k + '">' + l + '</button>').join("") + '</div></div>' +
     '<div class="grid2"><div class="field"><label for="rf">From</label><input type="date" id="rf" value="' + f0 + '"></div><div class="field"><label for="rt">To</label><input type="date" id="rt" value="' + t0 + '"></div></div>' +
-    '<div class="field" style="max-width:360px"><label for="rwho">Who</label><select id="rwho"><option value="">Everyone</option>' + D.emps.filter(e => e.hourly !== false).map(e => '<option value="' + e.id + '">' + esc(fullName(e)) + '</option>').join("") + '</select></div>' +
-    '<label class="check"><input type="checkbox" id="rdetail"><span><b>Include the day-by-day details</b><span class="hint">Adds each person\'s clock-in and clock-out times, PTO, sick and holiday hours for every day. Takes more pages. Leave it off for the one-page overview.</span></span></label>' +
+    '<div class="field" style="max-width:360px"><label for="rwho">Who</label><select id="rwho"><option value="">Everyone</option>' + D.emps.filter(e => e.hourly !== false).map(e => '<option value="' + e.id + '"' + (L.who === e.id ? " selected" : "") + '>' + esc(fullName(e)) + '</option>').join("") + '</select></div>' +
+    '<label class="check"><input type="checkbox" id="rdetail"' + (L.detail ? " checked" : "") + '><span><b>Include the day-by-day details</b><span class="hint">Adds each person\'s clock-in and clock-out times, PTO, sick and holiday hours for every day. Takes more pages. Leave it off for the one-page overview.</span></span></label>' +
     '<p class="err" id="rerr"></p><div><button class="btn btn-primary" type="button" id="rgo">Create summary</button></div>';
   $$("[data-pick]", P).forEach(b => b.addEventListener("click", () => {
     $$("[data-pick]", P).forEach(x => x.classList.toggle("on-pick", x === b));
     const r = quickRange(b.dataset.pick); if (r) { $("#rf").value = r[0]; $("#rt").value = r[1]; } else $("#rf").focus();
   }));
+  ["#rf", "#rt"].forEach(id => $(id).addEventListener("input", () => $$("[data-pick]", P).forEach(x => x.classList.toggle("on-pick", x.dataset.pick === "custom"))));
   $("#rgo").addEventListener("click", () => {
     const from = $("#rf").value, to = $("#rt").value;
     if (!from || !to || to < from) { $("#rerr").textContent = "Choose a From date and a To date after it."; return; }
-    go("report", { from, to, who: $("#rwho").value, detail: $("#rdetail").checked });
+    const pick = ($("[data-pick].on-pick", P) || {}).dataset?.pick || "custom";
+    go("report", { from, to, who: $("#rwho").value, detail: $("#rdetail").checked, pick });
   });
 }
 /* gathers everything for a date range. Weeks count toward the range by their week-ending Friday, the way payroll does. */
@@ -2189,14 +2199,14 @@ function reportCsv(R, detail) {
 }
 async function viewReport(opts) {
   if (!S.emp || !S.emp.admin) return go("home");
-  view().innerHTML = navBar("settings") + '<div class="card"><div class="busy"><span class="spin"></span>Putting the summary together…</div></div>';
+  view().innerHTML = navBar("reports") + '<div class="card"><div class="busy"><span class="spin"></span>Putting the summary together…</div></div>';
   wireNav();
   const R = await buildReport(opts);
-  view().innerHTML = navBar("settings") +
-    '<div class="page-head no-print"><button class="btn btn-text" type="button" id="back">← Settings</button><div class="row"><button class="btn btn-secondary" type="button" id="rcsv">Download spreadsheet</button><button class="btn btn-primary" type="button" id="rprint">Print</button></div></div>' +
+  view().innerHTML = navBar("reports") +
+    '<div class="page-head no-print"><button class="btn btn-text" type="button" id="back">← Reports</button><div class="row"><button class="btn btn-secondary" type="button" id="rcsv">Download spreadsheet</button><button class="btn btn-primary" type="button" id="rprint">Print</button></div></div>' +
     '<div class="card report">' + reportHtml(R, opts.detail) + '</div>';
   wireNav();
-  $("#back").addEventListener("click", () => go("manage", { tab: "settings", open: "report" }));
+  $("#back").addEventListener("click", () => go("manage", { tab: "reports", last: opts }));
   $("#rprint").addEventListener("click", () => {
     let area = $("#print-area"); if (!area) { area = document.createElement("div"); area.id = "print-area"; document.body.appendChild(area); }
     area.innerHTML = '<div class="report">' + reportHtml(R, opts.detail) + '</div>';
