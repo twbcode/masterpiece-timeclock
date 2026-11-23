@@ -293,6 +293,10 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14.5px; font-vari
 .sh-sign span { flex: 1; border-bottom: 1px solid #000; height: 20px; }
 .sh-sign span.d { flex: 0 0 90px; }
 .sh-foot { margin-top: 24px; font-size: 10.5px; color: #555; }
+/* tab bar: scrolls sideways only (no up/down wobble on phones) */
+.tabs { overflow-x: auto; overflow-y: hidden; touch-action: pan-x; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab { margin-bottom: 0; flex: none; }
 
 </style>
 
@@ -319,7 +323,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14.5px; font-vari
 (() => {
 "use strict";
 /* ================================================================ basics */
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.1.1";
 const ROOT_NAME = "Masterpiece Time Clock";
 const SEAL_SALT = "mpc-timeclock-seal-v1";
 const OT_LIMIT = 40;                       // hours worked in a week before overtime
