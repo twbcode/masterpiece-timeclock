@@ -770,7 +770,7 @@ function MpcMockServer(ns) {
 (() => {
 "use strict";
 /* ================================================================ basics */
-const APP_VERSION = "2.1.0";
+const APP_VERSION = "2.1.1";
 const ROOT_NAME = "Masterpiece Time Clock";
 const SEAL_SALT = "mpc-timeclock-seal-v1";
 const OT_LIMIT = 40;                       // hours worked in a week before overtime
@@ -784,8 +784,8 @@ const uid = () => (crypto.randomUUID ? crypto.randomUUID().slice(0, 13) : Date.n
 const params = new URLSearchParams(location.search);
 const inArtifact = !!(window.claude && window.claude.use);
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-const CATS = { worked: "Worked", pto: "PTO", sick: "Sick leave", holiday: "Holiday", estimated: "Estimated" };
-const CAT_TAG = { pto: "pto", sick: "sick", holiday: "hol", estimated: "est", worked: "" };
+const CATS = { worked: "Worked", pto: "PTO", sick: "Sick leave", holiday: "Holiday" };
+const CAT_TAG = { pto: "pto", sick: "sick", holiday: "hol", worked: "" };
 
 /* dates: a week runs Monday to Sunday and is named by its Monday (YYYY-MM-DD); it's paid as "week ending Friday" */
 const dayKey = (d) => { d = new Date(d); return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); };
@@ -867,16 +867,15 @@ async function listDirs(parts) {
 }
 async function readJson(parts, name) {
   const d = Mirror.rows.get(under(parts) + name); if (d == null) return null;
-  try { return Object.assign(JSON.parse(d), { _tampered: false }); } catch (_) { return { _broken: true, _file: name }; }
+  try { return JSON.parse(d); } catch (_) { return { _broken: true, _file: name }; }
 }
 async function writeJson(parts, name, obj) {
-  const o = Object.assign({}, obj); delete o._tampered; delete o._seal; delete o.file;
+  const o = Object.assign({}, obj); delete o._seal; delete o.file;
   const path = under(parts) + name;
   const r = await api("put", { path, data: o, mode: Mirror.rows.has(path) ? "update" : "create" });
   Mirror.rows.set(r.path, r.data);
   return r.path;
 }
-async function writeText(parts, name, text) { return writeJson(parts, name, { text }); }
 
 /* ================================================================ passwords (checked by the server) */
 function newCode() {
@@ -955,30 +954,6 @@ async function addLedger(empId, cat, hours, note, ref) {
   const t = Date.now();
   await writeJson(["balances", empId], t + "-" + rnd() + ".json", Object.assign({ t, cat, hours: r2(hours), note, by: S.emp ? S.emp.id : "" }, ref ? { ref } : {}));
 }
-/* PTO and sick hours earned (accrual), added when a week is locked for payroll. Re-locking a week
-   only adds the difference, so nothing is counted twice. */
-const ACCRUE_DEFAULT = { mode: "none", amount: 0, per: 40, max: 0 };
-const accrualRule = (cat) => Object.assign({}, ACCRUE_DEFAULT, (D.settings.accrual || {})[cat] || {});
-function describeRule(r) {
-  if (r.mode === "week") return hrs(r.amount) + " h every week" + (r.max ? ", up to " + hrs(r.max) + " h" : "");
-  if (r.mode === "hours") return hrs(r.amount) + " h for every " + hrs(r.per) + " h worked" + (r.max ? ", up to " + hrs(r.max) + " h" : "");
-  return "You add it each month (Team tab)";
-}
-async function accrueForWeek(w) {
-  const out = [];
-  for (const cat of ["pto", "sick"]) {
-    const r = accrualRule(cat);
-    if (r.mode === "none" || w.emp[cat === "pto" ? "earnPto" : "earnSick"] === false) continue;
-    let earned = r.mode === "week" ? Number(r.amount) || 0 : (Number(r.per) > 0 ? (w.worked / Number(r.per)) * (Number(r.amount) || 0) : 0);
-    const L = await ledger(w.emp.id); const ref = "accrual:" + w.wk;
-    const already = L.filter(x => x.cat === cat && x.ref === ref).reduce((a, x) => a + x.hours, 0);
-    const bal = (Number(w.emp[cat + "Start"]) || 0) + L.filter(x => x.cat === cat).reduce((a, x) => a + x.hours, 0) - already;
-    if (Number(r.max) > 0) earned = Math.max(0, Math.min(earned, Number(r.max) - bal));
-    const diff = r2(earned - already);
-    if (Math.abs(diff) >= 0.01) { await addLedger(w.emp.id, cat, diff, (cat === "pto" ? "PTO" : "Sick leave") + " earned, " + weekLc(w.wk), ref); out.push(fullName(w.emp) + " " + (cat === "pto" ? "PTO" : "sick") + " " + (diff > 0 ? "+" : "") + hrs(diff) + " h"); }
-  }
-  return out;
-}
 async function balances(emp) {
   const L = await ledger(emp.id);
   const sum = (c) => r2((Number(emp[c + "Start"]) || 0) + L.filter(x => x.cat === c).reduce((s, x) => s + x.hours, 0));
@@ -999,7 +974,7 @@ function computeWeek(emp, wk, evs, now = Date.now()) {
   const days = keys.map(k => ({ key: k, pairs: [], minutes: 0, entries: [], issues: [], est: null, worked: 0 }));
   const dayOf = (t) => days.find(d => d.key === dayKey(t)) || null;
   const issues = [];
-  const punches = live.filter(e => e.type === "punch").map(e => ({ id: e.id, dir: e.dir, at: moves[e.id] != null ? moves[e.id] : e.at, how: e.how, by: e.by, tampered: e._tampered, moved: moves[e.id] != null }))
+  const punches = live.filter(e => e.type === "punch").map(e => ({ id: e.id, dir: e.dir, at: moves[e.id] != null ? moves[e.id] : e.at, how: e.how, by: e.by, moved: moves[e.id] != null }))
     .sort((a, b) => a.at - b.at);
   let open = null, liveMin = 0, clockedIn = null;
   const addPair = (i, o) => {
@@ -1023,7 +998,7 @@ function computeWeek(emp, wk, evs, now = Date.now()) {
     else if (x) { x.bad = "No clock-out"; const d = dayOf(open.at); if (d) d.issues.push("Missed clock-out after " + fmtTime(open.at)); }
   }
   // hours added by the manager or approved requests
-  for (const e of live.filter(e => e.type === "hours")) { const d = days.find(x => x.key === e.date); if (d) d.entries.push({ id: e.id, cat: e.cat, hours: Number(e.hours) || 0, note: e.note || "", by: e.by, tampered: e._tampered }); }
+  for (const e of live.filter(e => e.type === "hours")) { const d = days.find(x => x.key === e.date); if (d) d.entries.push({ id: e.id, cat: e.cat, hours: Number(e.hours) || 0, note: e.note || "", by: e.by }); }
   // company holidays (Monday to Friday) count automatically unless taken off for this person
   for (const h of holidaysIn(wk)) {
     if (emp.created && h.date < dayKey(emp.created)) continue;   // not before they were added
@@ -1031,16 +1006,9 @@ function computeWeek(emp, wk, evs, now = Date.now()) {
     const off = live.some(e => e.type === "holiday_off" && e.date === h.date);
     if (d && !off && !d.entries.some(x => x.cat === "holiday")) d.entries.push({ id: null, cat: "holiday", hours: Number(h.hours) || 0, note: h.name, auto: true });
   }
-  const T = { worked: 0, pto: 0, sick: 0, holiday: 0, estimatedUsed: 0 }; const estDiffs = [];
+  const T = { worked: 0, pto: 0, sick: 0, holiday: 0 };
   for (const d of days) {
-    const actual = d.minutes / 60 + d.entries.filter(x => x.cat === "worked").reduce((s, x) => s + x.hours, 0);
-    const est = d.entries.filter(x => x.cat === "estimated").reduce((s, x) => s + x.hours, 0);
-    const hasActual = d.pairs.length > 0 || d.entries.some(x => x.cat === "worked");
-    d.worked = actual;
-    if (est) {
-      if (hasActual) { d.est = { hours: est, replaced: true }; estDiffs.push({ date: d.key, est, actual: r2(actual) }); }
-      else { d.est = { hours: est, replaced: false }; d.worked = est; T.estimatedUsed += est; }
-    }
+    d.worked = d.minutes / 60 + d.entries.filter(x => x.cat === "worked").reduce((s, x) => s + x.hours, 0);
     T.worked += d.worked;
     for (const c of ["pto", "sick", "holiday"]) T[c] += d.entries.filter(x => x.cat === c).reduce((s, x) => s + x.hours, 0);
     if (d.issues.length) issues.push(...d.issues.map(t => fmtDay(d.key) + ": " + t));
@@ -1051,10 +1019,9 @@ function computeWeek(emp, wk, evs, now = Date.now()) {
   const otStatus = ot <= 0 ? "none" : otApproved == null ? "pending" : Math.abs(otApproved - ot) < 0.01 ? "approved" : "changed";
   const sign = [...live].reverse().find(e => e.type === "signoff");
   const changedAfterSign = sign ? live.some(e => e.created > sign.created && e.type !== "signoff") : false;
-  const tampered = evs.some(e => e._tampered);
   const total = r2(reg + ot + T.pto + T.sick + T.holiday);
   return { emp, wk, days, punches, clockedIn, liveMin, issues, worked, reg, ot, otApproved, otStatus, pto: r2(T.pto), sick: r2(T.sick), holiday: r2(T.holiday),
-    estimated: r2(T.estimatedUsed), estDiffs, total, signed: sign || null, changedAfterSign, tampered };
+    total, signed: sign || null, changedAfterSign };
 }
 async function weekFor(emp, wk) { return computeWeek(emp, wk, await weekEvents(wk, emp.id)); }
 const snapOf = (w) => ({ reg: w.reg, ot: w.ot, pto: w.pto, sick: w.sick, holiday: w.holiday, total: w.total });
@@ -1481,16 +1448,14 @@ function weekTable(w, { admin = false } = {}) {
     const pairs = d.pairs.map(p => {
       const a = p.in ? fmtTime(p.in.at) : "—", b = p.out ? fmtTime(p.out.at) : p.live ? "now" : "—";
       const ed = "";
-      const flag = (p.in && p.in.tampered) || (p.out && p.out.tampered) ? ' <span class="tag bad" title="This punch was changed outside the program">edited outside</span>' : "";
       const how = (p.in && p.in.how !== "clock") || (p.out && p.out.how !== "clock") ? ' <span class="tag" title="Entered by hand or from a request, not with the clock button">added</span>' : "";
-      return '<span class="pair' + (p.live ? " open" : p.bad ? " bad" : "") + '">' + a + ' – ' + b + (p.bad ? " (" + esc(p.bad) + ")" : "") + '</span>' + how + flag + ed;
+      return '<span class="pair' + (p.live ? " open" : p.bad ? " bad" : "") + '">' + a + ' – ' + b + (p.bad ? " (" + esc(p.bad) + ")" : "") + '</span>' + how + ed;
     }).join("");
-    const ents = d.entries.filter(x => !(x.cat === "estimated" && d.est && d.est.replaced) || admin).map(x => (x.cat === "estimated" && d.est && d.est.replaced ? "" : catTag(x.cat, hrs(x.hours) + " h")) + (x.note ? ' <span class="hint">' + esc(x.note) + '</span>' : "") +
+    const ents = d.entries.map(x => catTag(x.cat, hrs(x.hours) + " h") + (x.note ? ' <span class="hint">' + esc(x.note) + '</span>' : "") +
       "").join(" ");
-    const est = d.est && d.est.replaced ? ' <span class="tag est" title="The estimate no longer counts">Estimated ' + hrs(d.est.hours) + ' h → actual ' + hrs(d.worked) + ' h</span>' : "";
     const live = w.clockedIn && dayKey(w.clockedIn.at) === d.key ? ' <span class="hint">(+' + hm(w.liveMin / 60) + ' so far)</span>' : "";
     return '<tr' + (wkend ? ' class="weekend"' : "") + '><td class="day">' + esc(fmtDay(d.key)) + '</td><td><div class="punches">' + (pairs || (d.entries.length ? "" : '<span class="hint">—</span>')) + '</div>' +
-      (ents || est ? '<div class="flags" style="margin-top:6px">' + ents + est + '</div>' : "") + '</td><td class="num">' + (d.worked ? hrs(d.worked) + live : live || "") + '</td>' + (admin ? '<td class="num no-print"><button class="btn btn-secondary mini" type="button" data-day="' + d.key + '">Edit</button></td>' : "") + '</tr>';
+      (ents ? '<div class="flags" style="margin-top:6px">' + ents + '</div>' : "") + '</td><td class="num">' + (d.worked ? hrs(d.worked) + live : live || "") + '</td>' + (admin ? '<td class="num no-print"><button class="btn btn-secondary mini" type="button" data-day="' + d.key + '">Edit</button></td>' : "") + '</tr>';
   }).join("");
   return '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Day</th><th>Time in – time out</th><th class="num">Hours worked</th>' + (admin ? '<th class="no-print"></th>' : "") + '</tr></thead><tbody>' + rows +
     '</tbody><tfoot><tr><td>Total</td><td></td><td class="num">' + hrs(w.worked) + '</td>' + (admin ? '<td class="no-print"></td>' : "") + '</tr></tfoot></table></div>';
@@ -1636,9 +1601,6 @@ async function paneWeek(P, wk) {
     const f = [];
     if (w.issues.length) f.push('<span class="tag bad">Missed punch</span>');
     const ot = otTag(w); if (ot) f.push(ot);
-    if (w.estimated) f.push('<span class="tag est">' + hrs(w.estimated) + ' h estimated</span>');
-    if (w.estDiffs.length) f.push('<span class="tag est">Estimate replaced</span>');
-    if (w.tampered) f.push('<span class="tag bad">Edited outside the program</span>');
     f.push(w.signed && !w.changedAfterSign ? '<span class="tag ok">Confirmed</span>' : '<span class="tag">Not confirmed</span>');
     const st = pst[w.emp.id];
     if (st && st.open) f.push('<span class="tag warn">' + sgn(st.diff.total) + ' h to add next payroll</span>');
@@ -1647,11 +1609,10 @@ async function paneWeek(P, wk) {
     return f.join("");
   };
   const tot = (k) => hrs(ws.reduce((s, w) => s + w[k], 0));
-  P.innerHTML = '<div class="print-only"><h2>Masterpiece Construction Experts: time cards</h2></div>' +
-    '<div class="card"><div class="page-head"><div class="wk-nav"><button class="navbtn no-print" id="prev" aria-label="Previous week">‹</button><div><div class="lbl">' + esc(weekLabel(wk)) + '</div><div class="sub">' + esc(weekRange(wk)) +
+  P.innerHTML = '<div class="card"><div class="page-head"><div class="wk-nav"><button class="navbtn no-print" id="prev" aria-label="Previous week">‹</button><div><div class="lbl">' + esc(weekLabel(wk)) + '</div><div class="sub">' + esc(weekRange(wk)) +
     (meta.locked ? ' · <b>Payroll done</b> ' + esc(fmtStamp(meta.lock.created)) : " · Payroll not done yet") + '</div></div><button class="navbtn no-print" id="next" aria-label="Next week"' + (wk >= weekOf(new Date()) ? " disabled" : "") + '>›</button></div>' +
     '<div class="row no-print">' + (meta.locked ? '<button class="btn btn-primary" type="button" id="psheet">Payroll sheet</button><button class="btn btn-secondary" type="button" id="unlock">Unlock to redo payroll</button>' : '<button class="btn btn-primary" type="button" id="lock">Do payroll for this week</button>') +
-    '<button class="btn btn-secondary" type="button" id="out">Print or download</button></div></div>' +
+    '<button class="btn btn-secondary" type="button" id="out">Print time sheets</button></div></div>' +
     (people.length ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Employee</th><th class="num">Regular</th><th class="num">Overtime</th><th class="num">PTO</th><th class="num">Sick</th><th class="num">Holiday</th><th class="num">Total paid</th><th>Notes</th></tr></thead><tbody>' +
       ws.map((w, i) => '<tr class="click" data-emp="' + w.emp.id + '"><td><b>' + esc(fullName(w.emp)) + '</b><div class="hint">' + esc(w.emp.position || "") + '</div></td><td class="num">' + hrs(w.reg) + '</td><td class="num">' + hrs(w.ot) + '</td><td class="num">' + hrs(w.pto) + '</td><td class="num">' + hrs(w.sick) + '</td><td class="num">' + hrs(w.holiday) + '</td><td class="num"><b>' + hrs(w.total) + '</b></td><td><div class="flags">' + flagsOf(w) + '</div></td></tr>').join("") +
       '</tbody><tfoot><tr><td>All employees</td><td class="num">' + tot("reg") + '</td><td class="num">' + tot("ot") + '</td><td class="num">' + tot("pto") + '</td><td class="num">' + tot("sick") + '</td><td class="num">' + tot("holiday") + '</td><td class="num">' + tot("total") + '</td><td></td></tr></tfoot></table></div>'
@@ -1660,16 +1621,7 @@ async function paneWeek(P, wk) {
   $("#prev").addEventListener("click", () => go("manage", { tab: "cards", wk: shiftWeek(wk, -1) }));
   $("#next").addEventListener("click", () => go("manage", { tab: "cards", wk: shiftWeek(wk, 1) }));
   $$("tr[data-emp]").forEach(r => r.addEventListener("click", () => go("empweek", { id: r.dataset.emp, wk })));
-  $("#out").addEventListener("click", async () => {
-    const v = await ask({ title: "Print or download", html: '<div class="list">' +
-      '<button class="choice" type="button" data-c="sheets"><b>Print time sheets</b><span class="hint">One paper time sheet per person, for the file.</span></button>' +
-      '<button class="choice" type="button" data-c="summary"><b>Print this summary</b><span class="hint">Everyone\'s totals on one page.</span></button>' +
-      '<button class="choice" type="button" data-c="csv"><b>Download spreadsheet</b><span class="hint">The weekly totals as a file that opens in Excel.</span></button></div>',
-      buttons: [{ label: "Cancel", value: null }], onOpen: (done) => $$("[data-c]", dlg).forEach(b => b.addEventListener("click", () => done(b.dataset.c))) });
-    if (v === "sheets") printSheets(await Promise.all(ws.map(async w => ({ w, bal: await balances(w.emp) }))));
-    else if (v === "summary") window.print();
-    else if (v === "csv") download(csvName(wk), summaryCsv(wk, ws));
-  });
+  $("#out").addEventListener("click", async () => printSheets(await Promise.all(ws.map(async w => ({ w, bal: await balances(w.emp) })))));
   if ($("#lock")) $("#lock").addEventListener("click", () => doPayroll(wk, ws));
   if ($("#psheet")) $("#psheet").addEventListener("click", () => go("payroll", { wk }));
   if ($("#unlock")) $("#unlock").addEventListener("click", async () => {
@@ -1678,14 +1630,7 @@ async function paneWeek(P, wk) {
     await addWeekMeta(wk, { type: "unlock" }); await logChange("Unlocked " + weekLc(wk)); go("manage", { tab: "cards", wk });
   });
 }
-const csvName = (wk) => "Week ending " + fridayOf(wk) + ".csv";
 const csvCell = (v) => /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
-function summaryCsv(wk, ws) {
-  const rows = [["Masterpiece Construction Experts time cards", weekLabel(wk)], [], ["Employee", "Position", "Regular hours", "Overtime hours", "Overtime approved", "PTO hours", "Sick hours", "Holiday hours", "Total paid hours", "Notes"]];
-  for (const w of ws) rows.push([fullName(w.emp), w.emp.position || "", hrs(w.reg), hrs(w.ot), w.ot ? (w.otStatus === "approved" ? "Yes" : "No") : "", hrs(w.pto), hrs(w.sick), hrs(w.holiday), hrs(w.total),
-    [w.issues.length ? "Missed punch" : "", w.estimated ? hrs(w.estimated) + " h estimated" : "", w.signed && !w.changedAfterSign ? "Confirmed by employee" : "Not confirmed"].filter(Boolean).join("; ")]);
-  return rows.map(r => r.map(csvCell).join(",")).join("\r\n") + "\r\n";
-}
 async function download(name, text, type = "text/csv") {
   if (inArtifact) {   // the Claude preview hands files over through its own save prompt
     try { const dl = await window.claude.use("downloads"); if (dl) { await dl.save({ filename: name, data: new Blob([text], { type }) }); return; } } catch (_) { return; }
@@ -1798,9 +1743,7 @@ async function doPayroll(wk, ws) {
     snapshot[id].corr = corr[id].map(c => { const o = { wk: c.wk, paid: c.paid, actual: c.actual }; PK.forEach(k => { o[k] = c[k]; }); return o; });
   }
   await addWeekMeta(wk, { type: "lock", snapshot, early: estDays.length > 0 });
-  const earned = [];
-  for (const w of people) if (w.emp.active !== false) earned.push(...await accrueForWeek(Object.assign({}, w, { worked: snapshot[w.emp.id].worked })));
-  await logChange("Did payroll for " + weekLc(wk) + (estDays.length ? " (" + estDays.map(fmtDay).join(", ") + " estimated)" : "") + (corrList.length ? "; corrections for earlier weeks included" : "") + (earned.length ? ". Time off earned: " + earned.join(", ") : ""));
+  await logChange("Did payroll for " + weekLc(wk) + (estDays.length ? " (" + estDays.map(fmtDay).join(", ") + " estimated)" : "") + (corrList.length ? "; corrections for earlier weeks included" : ""));
   for (const w of people) {
     if (w.emp.active === false) continue;
     const s = snapshot[w.emp.id], c = (s.corr || []);
@@ -1922,9 +1865,9 @@ function sheetHtml(w, bal) {
     const chunks = []; for (let k = 0; k < Math.max(1, pairs.length); k += 2) chunks.push(pairs.slice(k, k + 2));
     chunks.forEach((c, j) => {
       const cell = (p, side) => p && p[side] ? fmtTime(p[side].at) : p && side === "out" && p.live ? "(clocked in)" : p ? "—" : "";
-      const other = j === 0 ? d.entries.filter(x => x.cat !== "worked" && !(x.cat === "estimated" && d.est && d.est.replaced)).map(x => (CATS[x.cat] || x.cat) + " " + hrs(x.hours)).join(", ") : "";
+      const other = j === 0 ? d.entries.filter(x => x.cat !== "worked").map(x => (CATS[x.cat] || x.cat) + " " + hrs(x.hours)).join(", ") : "";
       lines.push('<tr><td>' + (j === 0 ? esc(DAYS[i]) : "") + '</td><td>' + (j === 0 ? esc(fmtDate(d.key)) : "") + '</td><td>' + cell(c[0], "in") + '</td><td>' + cell(c[0], "out") + '</td><td>' + cell(c[1], "in") + '</td><td>' + cell(c[1], "out") + '</td>' +
-        '<td class="num">' + (j === 0 && d.worked ? hrs(d.worked) : "") + '</td><td>' + esc(other) + (j === 0 && d.est && !d.est.replaced ? " (estimated)" : "") + '</td></tr>');
+        '<td class="num">' + (j === 0 && d.worked ? hrs(d.worked) : "") + '</td><td>' + esc(other) + '</td></tr>');
     });
   });
   const otTxt = w.ot ? hrs(w.ot) + (w.otStatus === "approved" ? " (approved)" : " (not yet approved)") : "0.00";
@@ -1966,8 +1909,6 @@ async function viewEmpWeek({ id, wk }) {
       : st && st.s && st.s.est && !st.over ? '<div class="note"><b>Payroll was done before the week ended</b><span>Estimated for payroll: ' + Object.keys(st.s.est).sort().map(k => esc(fmtDay(k)) + " " + hrs(st.s.est[k]) + " h").join(", ") + '. If the real hours are different, the difference is added to the next payroll.</span></div>'
       : st && st.car.where.length && Math.abs(st.car.sum.total) >= 0.01 ? '<div class="note"><b>Corrected on a later payroll</b><span>The difference (' + sgn(st.car.sum.total) + ' h) was added to the payroll for ' + st.car.where.map(x => esc(weekLc(x))).join(" and ") + '.</span></div>' : "") +
     (w.issues.length ? '<div class="note bad"><b>Missed punch</b><span>' + w.issues.map(esc).join("<br>") + '. Tap Edit on that day to fix it.</span></div>' : "") +
-    (w.tampered ? '<div class="note bad"><b>Changed outside the program</b><span>Something on this time card was edited directly in the folder. Those entries are marked.</span></div>' : "") +
-    w.estDiffs.map(x => '<div class="note warn"><b>' + esc(fmtDay(x.date)) + ' was estimated at ' + hrs(x.est) + ' h</b><span>Actual: ' + hrs(x.actual) + ' h (' + (x.actual - x.est >= 0 ? "+" : "") + hrs(x.actual - x.est) + ' h). The actual hours count now.</span></div>').join("") +
     (w.otStatus === "pending" || w.otStatus === "changed" ? '<div class="note warn"><b>' + hrs(w.ot) + ' h overtime needs your approval</b><span>' + (w.otStatus === "changed" ? "You approved " + hrs(w.otApproved) + " h, but the hours changed since." : "Over " + OT_LIMIT + " hours worked this week.") + '</span><div class="row" style="margin-top:8px"><button class="btn btn-primary mini" type="button" id="ot-ok">Approve overtime</button></div></div>' : "") +
     statsBlock(w, bal) + weekTable(w, { admin: true }) +
     '<p class="hint no-print">Tap <b>Edit</b> on a day to change or add times, or add PTO, sick or holiday hours.</p></div>';
@@ -2153,11 +2094,9 @@ async function editEmployee(emp) {
     '<label class="check"><input type="checkbox" id="ea"' + (e.admin ? " checked" : "") + '><span><b>Manager</b><span class="hint">Can approve requests, fix time cards and reset passwords.</span></span></label>' +
     (isNew ? '<div class="field"><label for="et">Temporary password</label><input type="text" id="et" value="mpc-' + rnd().slice(0, 5) + '"><span class="hint">They choose their own the first time they sign in.</span></div>' :
       '<label class="check"><input type="checkbox" id="ex"' + (e.active === false ? "" : " checked") + '><span><b>Active</b><span class="hint">Uncheck when someone leaves. Their time cards stay.</span></span></label>' +
-      '<label class="check"><input type="checkbox" id="ep2"' + (e.earnPto === false ? "" : " checked") + '><span><b>Earns PTO</b><span class="hint">' + esc(describeRule(accrualRule("pto"))) + '</span></span></label>' +
-      '<label class="check"><input type="checkbox" id="es2"' + (e.earnSick === false ? "" : " checked") + '><span><b>Earns sick leave</b><span class="hint">' + esc(describeRule(accrualRule("sick"))) + '</span></span></label>' +
       '<div class="sep"></div><div class="row"><span><b>PTO left:</b> ' + hrs(bal.pto) + ' h · <b>Sick left:</b> ' + hrs(bal.sick) + ' h</span></div>' +
       '<div class="grid2"><div class="field"><label for="bp">Add PTO hours (use − to take away)</label><input type="number" id="bp" step="0.25" placeholder="0"></div><div class="field"><label for="bs">Add sick hours (use − to take away)</label><input type="number" id="bs" step="0.25" placeholder="0"></div></div>' +
-      '<div class="field"><label for="bn">Reason for the balance change</label><input type="text" id="bn" placeholder="Monthly PTO"></div>' +
+      '<div class="field"><label for="bn">Reason for the balance change</label><input type="text" id="bn" placeholder="Starting balance, or a correction"></div>' +
       '<div class="sep"></div><div class="row"><button class="btn btn-secondary mini" type="button" id="reset-pw">Reset password</button></div>') +
     '<p class="err" id="eerr"></p>',
     buttons: [{ label: "Cancel", value: false }, { label: isNew ? "Add employee" : "Save", value: true, kind: "btn-primary", check: () => {
@@ -2179,7 +2118,7 @@ async function editEmployee(emp) {
   e.first = $("#ef").value.trim(); e.last = $("#el").value.trim(); e.position = $("#ep").value.trim(); e.hourly = $("#eh").checked; e.admin = $("#ea").checked; e.payrollId = $("#epid").value.trim(); delete e.isNew;
   if (isNew) { const tp = $("#et").value; const made = await api("addEmployee", { e, temp: tp }); Mirror.rows.set("employees/" + made.emp.id + ".json", JSON.stringify(made.emp)); await syncNow(); if (e.payrollId) await saveEmp(Object.assign({}, made.emp, { payrollId: e.payrollId })); await logChange("Added employee " + fullName(e)); await alertBox("Employee added", fullName(e) + "'s temporary password is: " + tp + ". They'll choose their own the first time they sign in."); }
   else {
-    e.active = $("#ex").checked; e.earnPto = $("#ep2").checked; e.earnSick = $("#es2").checked;
+    e.active = $("#ex").checked;
     const bp = Number($("#bp").value) || 0, bs = Number($("#bs").value) || 0, note = $("#bn").value.trim() || "Balance change";
     await saveEmp(e);
     if (bp) await addLedger(e.id, "pto", bp, note);
@@ -2237,7 +2176,7 @@ function paneHolidays(P, year) {
 async function paneLog(P) {
   const L = await loadLog();
   P.innerHTML = '<div class="card"><div class="card-head"><h3>Change log</h3><p class="muted">Every change made by a manager, newest first. Entries can\'t be changed in the program.</p></div>' +
-    (L.length ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead><tbody>' + L.map(x => '<tr><td style="white-space:nowrap">' + esc(fmtStamp(x.t)) + '</td><td>' + esc(nameOf(x.by)) + '</td><td>' + esc(x.text) + (x._tampered ? ' <span class="tag bad">edited outside</span>' : "") + '</td></tr>').join("") + '</tbody></table></div>' : '<p class="muted">Nothing yet.</p>') + '</div>';
+    (L.length ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead><tbody>' + L.map(x => '<tr><td style="white-space:nowrap">' + esc(fmtStamp(x.t)) + '</td><td>' + esc(nameOf(x.by)) + '</td><td>' + esc(x.text) + '</td></tr>').join("") + '</tbody></table></div>' : '<p class="muted">Nothing yet.</p>') + '</div>';
 }
 async function paneSettings(P, year, open) {
   const y = new Date().getFullYear();
@@ -2246,17 +2185,15 @@ async function paneSettings(P, year, open) {
   const SEC = [
     ["hol", "Paid holidays", nHol + " paid holiday" + (nHol === 1 ? "" : "s") + " in " + year + ". Add, change or remove holidays."],
     ["log", "Change history", "See every change a manager has made to time cards, holidays and settings."],
-    ["earn", "PTO and sick leave earned", "PTO: " + describeRule(accrualRule("pto")) + " · Sick: " + describeRule(accrualRule("sick"))],
     ["round", "Rounding clock times", r ? "Counted to the nearest " + r + " minutes" : "Counted exactly, to the minute"],
     ["code", "Manager password recovery code", "Make a new code if the one from setup is lost."],
-    ["backup", "Backup copy of all records", "Download everything to this computer, for safekeeping."],
   ];
   P.innerHTML = '<div class="card acc-card"><div class="card-head"><h2>Settings</h2><p class="muted">Tap a setting to open it.</p></div>' +
     SEC.map(([k, t, d]) => '<details class="acc" data-acc-sec="' + k + '"' + (open === k ? " open" : "") + '><summary><div><b>' + esc(t) + '</b><span>' + esc(d) + '</span></div><span class="acc-chev" aria-hidden="true">›</span></summary><div class="acc-body" id="sec-' + k + '"></div></details>').join("") + '</div>' +
     '<div id="s-core" hidden></div>';
   paneHolidays($("#sec-hol"), year);
   paneSettingsCore($("#s-core"));
-  for (const k of ["earn", "round", "code", "folder"]) { const c = $('#s-core [data-sec="' + k + '"]'); if (c) $("#sec-" + k).appendChild(c); }
+  for (const k of ["round", "code"]) { const c = $('#s-core [data-sec="' + k + '"]'); if (c) $("#sec-" + k).appendChild(c); }
   let logDone = false;
   const loadLogNow = async () => { if (logDone) return; logDone = true; const box = document.createElement("div"); await paneLog(box); $("#sec-log").appendChild($(".tbl-wrap", box) || $("p.muted", box) || box); };
   $$("details.acc").forEach(d => d.addEventListener("toggle", () => { if (d.open) { current.open = d.dataset.accSec; if (d.dataset.accSec === "log") loadLogNow(); } }));
@@ -2266,33 +2203,11 @@ function paneSettingsCore(P) {
   const r = Number(D.settings.round) || 0;
   P.innerHTML = '<div class="card" data-sec="round"><div class="card-head"><h3>Rounding</h3><p class="muted">Choose how clock-in and clock-out times are counted toward hours. The exact times are always kept on the time card.</p></div>' +
     '<div class="field" style="max-width:320px"><select id="round"><option value="0"' + (r === 0 ? " selected" : "") + '>Exact, to the minute</option><option value="5"' + (r === 5 ? " selected" : "") + '>Nearest 5 minutes</option><option value="15"' + (r === 15 ? " selected" : "") + '>Nearest 15 minutes</option></select></div></div>' +
-    '<div class="card" data-sec="earn"><div class="card-head"><h3>PTO and sick leave earned</h3><p class="muted">Simplest: leave both on “You add it each month” and use <b>Add monthly PTO &amp; sick</b> on the Team tab. Or have hours build up automatically each time you do payroll. To stop it for one person, open them in Team.</p></div>' +
-    ["pto", "sick"].map(cat => { const a = accrualRule(cat); return '<div class="opt" data-acc="' + cat + '"><b>' + (cat === "pto" ? "PTO" : "Sick leave") + '</b>' +
-      '<div class="grid2"><div class="field"><label>How it builds up</label><select data-k="mode"><option value="none"' + (a.mode === "none" ? " selected" : "") + '>You add it each month on the Team tab</option><option value="week"' + (a.mode === "week" ? " selected" : "") + '>A set number of hours each week</option><option value="hours"' + (a.mode === "hours" ? " selected" : "") + '>Hours for every so many hours worked</option></select></div>' +
-      '<div class="field"><label>Hours earned</label><input type="number" data-k="amount" step="0.01" min="0" value="' + (a.amount || "") + '"></div>' +
-      '<div class="field" data-show="hours"><label>For every … hours worked</label><input type="number" data-k="per" step="0.25" min="1" value="' + (a.per || 40) + '"></div>' +
-      '<div class="field"><label>Most a balance can reach (blank = no limit)</label><input type="number" data-k="max" step="0.25" min="0" value="' + (a.max || "") + '"></div></div></div>'; }).join("") +
-    '<div><button class="btn btn-primary" type="button" id="acc-save">Save time off settings</button></div></div>' +
-    '<div class="card" data-sec="backup"><div class="card-head"><h3>Backup</h3><p class="muted">All time cards are kept privately on the time clock\'s server, which only the owner can open. Download a full copy any time you want one for your own records. Keep it somewhere private: it has everyone\'s hours.</p></div>' +
-    '<div><button class="btn btn-secondary" type="button" id="backup">Download full backup</button></div></div>' +
     '<div class="card" data-sec="code"><div class="card-head"><h3>Manager recovery code</h3><p class="muted">The code you wrote down at setup lets a manager reset a forgotten password. If it\'s lost, make a new one here. The old code stops working.</p></div><div><button class="btn btn-secondary" type="button" id="recode">Make a new recovery code</button></div></div>' +
     '';
-  const showPer = () => $$("[data-acc]").forEach(b => { $('[data-show="hours"]', b).hidden = $('[data-k="mode"]', b).value !== "hours"; });
-  $$('[data-k="mode"]').forEach(x => x.addEventListener("change", showPer)); showPer();
-  $("#acc-save").addEventListener("click", async () => {
-    await loadSettings(); D.settings.accrual = {};
-    $$("[data-acc]").forEach(b => { const g = (k) => $('[data-k="' + k + '"]', b).value; D.settings.accrual[b.dataset.acc] = { mode: g("mode"), amount: Number(g("amount")) || 0, per: Number(g("per")) || 40, max: Number(g("max")) || 0 }; });
-    await saveSettings();
-    await logChange("Time off earned set to: PTO " + describeRule(accrualRule("pto")) + "; sick leave " + describeRule(accrualRule("sick")));
-    toast("Saved.");
-  });
   $("#round").addEventListener("change", async () => {
     await loadSettings(); D.settings.round = Number($("#round").value); await saveSettings();
     await logChange("Changed rounding to " + ($("#round").value === "0" ? "exact minutes" : "nearest " + $("#round").value + " minutes")); toast("Saved.");
-  });
-  $("#backup").addEventListener("click", async () => {
-    try { const r = await api("backup"); download("Masterpiece Time Clock backup " + dayKey(new Date()) + ".json", JSON.stringify(r, null, 1), "application/json"); await logChange("Downloaded a full backup"); }
-    catch (e) { showError(e); }
   });
   $("#recode").addEventListener("click", async () => {
     const code = newCode();
@@ -2403,7 +2318,7 @@ function reportHtml(R, detail) {
           if (i >= 5 && !d.pairs.length && !d.entries.length) return "";
           const pairs = d.pairs.map(pr => (pr.in ? fmtTime(pr.in.at) : "—") + " – " + (pr.out ? fmtTime(pr.out.at) : pr.live ? "still in" : "—")).join(", ");
           const c = (k) => d.entries.filter(x => x.cat === k).reduce((a, x) => a + x.hours, 0);
-          const notes = [d.issues.length ? "Missed punch" : "", d.est && !d.est.replaced ? "Estimated" : "", d.entries.filter(x => x.note && x.cat !== "worked").map(x => x.note).join(", ")].filter(Boolean).join("; ");
+          const notes = [d.issues.length ? "Missed punch" : "", d.entries.filter(x => x.note && x.cat !== "worked").map(x => x.note).join(", ")].filter(Boolean).join("; ");
           return '<tr><td>' + esc(fmtDay(d.key)) + '</td><td>' + esc(pairs || "—") + '</td><td class="num">' + (d.worked ? hrs(d.worked) : "") + '</td><td class="num">' + (c("pto") ? hrs(c("pto")) : "") + '</td><td class="num">' + (c("sick") ? hrs(c("sick")) : "") + '</td><td class="num">' + (c("holiday") ? hrs(c("holiday")) : "") + '</td><td>' + esc(notes) + '</td></tr>';
         }).join("") + '</tbody><tfoot><tr><td colspan="2">Regular ' + hrs(w.reg) + ' · Overtime ' + hrs(w.ot) + (w.ot ? (w.otStatus === "approved" ? " (approved)" : " (not approved)") : "") + '</td><td class="num">' + hrs(w.worked) + '</td><td class="num">' + hrs(w.pto) + '</td><td class="num">' + hrs(w.sick) + '</td><td class="num">' + hrs(w.holiday) + '</td><td><b>' + hrs(w.total) + ' paid</b></td></tr></tfoot></table></div>';
     }
