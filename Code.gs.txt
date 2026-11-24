@@ -474,14 +474,13 @@ function MpcServer(store, env) {
     if (inv.used) fail("This invite was already used to make an account. Sign in instead.", "used");
     var first = String(req.first || "").trim(), last = String(req.last || "").trim();
     if (!first || !last) fail("Type your first and last name.");
-    var pwErr = pwProblem(req.password); if (pwErr) fail(pwErr);
-    if (req.pin != null) { var pinErr = pinProblem(req.pin); if (pinErr) fail(pinErr); }
-    if (employees().some(function (e) { return (e.first + " " + e.last).toLowerCase() === (first + " " + last).toLowerCase() && e.active !== false; })) fail("There's already an account with that name.");
     var isMgr = inv.role === "manager";
+    if (isMgr) { var pwErr = pwProblem(req.password); if (pwErr) fail(pwErr); }      // managers have a password; employees only a PIN
+    if (req.pin != null || !isMgr) { var pinErr = pinProblem(req.pin); if (pinErr) fail(pinErr); }
+    if (employees().some(function (e) { return (e.first + " " + e.last).toLowerCase() === (first + " " + last).toLowerCase() && e.active !== false; })) fail("There's already an account with that name.");
     var e = { id: id() + id(), first: first, last: last, position: String(req.position || (isMgr ? "Office Manager" : "")).trim(), admin: isMgr, hourly: isMgr ? req.hourly !== false : true, active: true, created: env.now(), ptoStart: 0, sickStart: 0 };
-    var salt = env.rand(16);
     save("employees/" + e.id + ".json", e);
-    save("auth/emp-" + e.id, { salt: salt, hash: hashPw(req.password, salt), mustChange: false });
+    if (isMgr) newPw(e.id, req.password, false);
     if (req.pin != null) setPinFor(e.id, req.pin);
     inv.used = e.id; inv.usedAt = env.now(); save("invites/" + inv.code, inv);
     if (inv.phone) { d.emp = e.id; d.status = "allowed"; save("devices/" + d.id + ".json", d); }
@@ -514,17 +513,18 @@ function MpcServer(store, env) {
     if (d.emp && d.emp !== e.id) fail("This phone belongs to someone else.", "denied");
     var a = obj("auth/emp-" + e.id), tok;
     if (req.pin != null) {                    // the 6-digit PIN: for clocking in and out (and confirming hours)
-      if (!a || !a.pinHash) fail("You haven't made a PIN yet. Sign in with your password once to make one.", "nopin");
+      if (!a || !a.pinHash) fail(e.admin ? "You haven't made a PIN yet. Sign in with your password once to make one." : "You don't have a PIN yet. Ask your manager to set one up.", "nopin");
       var pt = Number(env.cacheGet("ptry:" + e.id) || 0);
-      if (pt >= 5) fail("Too many wrong PINs. Sign in with your password, or wait 10 minutes.", "locked");
+      if (pt >= 5) fail(e.admin ? "Too many wrong PINs. Sign in with your password, or wait 10 minutes." : "Too many wrong PINs. Wait 10 minutes, or ask your manager to reset your PIN.", "locked");
       if (hashPw(String(req.pin), a.pinSalt) !== a.pinHash) { env.cachePut("ptry:" + e.id, String(pt + 1), 600); fail("That PIN isn't right. Try again.", "badpin"); }
       env.cacheDel("ptry:" + e.id);
       tok = env.rand(24);
-      env.cachePut("s:" + tok, JSON.stringify({ emp: e.id, dev: d.id, pin: true }), SESSION_SECONDS);
-      return { tok: tok, emp: e, pin: true, hasPin: true, now: env.now() };
+      env.cachePut("s:" + tok, JSON.stringify({ emp: e.id, dev: d.id, pin: !!e.admin }), SESSION_SECONDS);   // a manager's PIN only clocks in and out
+      return { tok: tok, emp: e, pin: !!e.admin, hasPin: true, mustChange: !!a.pinMustChange, now: env.now() };
     }
     var tries = Number(env.cacheGet("try:" + e.id) || 0);
     if (tries >= 8) fail("Too many wrong passwords. Wait 10 minutes and try again.", "locked");
+    if (a && !a.hash) fail("Use your 6-digit PIN to sign in.", "usepin");
     if (!a || hashPw(String(req.password || ""), a.salt) !== a.hash) { env.cachePut("try:" + e.id, String(tries + 1), 600); fail("That password isn't right. Try again.", "badpw"); }
     env.cacheDel("try:" + e.id); env.cacheDel("ptry:" + e.id);
     tok = env.rand(24);
@@ -542,9 +542,17 @@ function MpcServer(store, env) {
   };
   A.setPin = function (req) {
     var u = session(req); if (u.pin) fail("Sign in with your password to change your PIN.", "denied");
+    var a = obj("auth/emp-" + u.emp.id) || {};
+    if (!u.emp.admin && a.pinHash && !a.pinMustChange && hashPw(String(req.old || ""), a.pinSalt) !== a.pinHash) fail("Your current PIN isn't right.", "badpin");
     var err = pinProblem(req.pin); if (err) fail(err);
-    setPinFor(u.emp.id, req.pin); env.cacheDel("ptry:" + u.emp.id);
+    setPinFor(u.emp.id, req.pin); setAuth(u.emp.id, { pinMustChange: false }); env.cacheDel("ptry:" + u.emp.id);
     return {};
+  };
+  function tempPin() { var p; do { p = String(100000 + parseInt(env.rand(4), 16) % 900000); } while (pinProblem(p)); return p; }
+  A.resetPin = function (req) {         // a manager gives someone a temporary PIN; they pick their own at their next sign-in
+    session(req, true); var e = emp(req.emp); if (!e) fail("Not found.");
+    var p = tempPin(); setPinFor(e.id, p); setAuth(e.id, { pinMustChange: true }); env.cacheDel("ptry:" + e.id);
+    return { temp: p };
   };
   A.resetPassword = function (req) {
     var u = session(req, true); var e = emp(req.emp); if (!e) fail("Not found.");
@@ -567,15 +575,16 @@ function MpcServer(store, env) {
     var rs = env.rand(16); s.recovery = { salt: rs, hash: mpcSha256(rs + ":" + String(req.code || "").toUpperCase().replace(/[^A-Z0-9]/g, "")) };
     save("settings.json", s); return {};
   };
-  A.addEmployee = function (req) {      // manager adds someone without an invite (temporary password)
+  A.addEmployee = function (req) {      // manager adds someone without an invite (temporary PIN, plus a temporary password for a manager)
     var u = session(req, true);
     var e = req.e || {}; var first = String(e.first || "").trim(), last = String(e.last || "").trim();
     if (!first || !last) fail("Type a first and last name.");
-    var temp = String(req.temp || ""); if (temp.length < 6) fail("The temporary password needs at least 6 characters.");
+    var temp = String(req.temp || ""); if (e.admin && temp.length < 6) fail("The temporary password needs at least 6 characters.");
     var n = { id: id() + id(), first: first, last: last, position: String(e.position || "").trim(), admin: !!e.admin, hourly: e.hourly !== false, active: true, created: env.now(), ptoStart: 0, sickStart: 0 };
-    var salt = env.rand(16);
-    save("employees/" + n.id + ".json", n); save("auth/emp-" + n.id, { salt: salt, hash: hashPw(temp, salt), mustChange: true });
-    return { emp: n };
+    save("employees/" + n.id + ".json", n);
+    if (e.admin) newPw(n.id, temp, true);
+    var p = tempPin(); setPinFor(n.id, p); setAuth(n.id, { pinMustChange: true });
+    return { emp: n, tempPin: p };
   };
   A.invite = function (req) {
     session(req, true);

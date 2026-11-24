@@ -899,14 +899,13 @@ function MpcServer(store, env) {
     if (inv.used) fail("This invite was already used to make an account. Sign in instead.", "used");
     var first = String(req.first || "").trim(), last = String(req.last || "").trim();
     if (!first || !last) fail("Type your first and last name.");
-    var pwErr = pwProblem(req.password); if (pwErr) fail(pwErr);
-    if (req.pin != null) { var pinErr = pinProblem(req.pin); if (pinErr) fail(pinErr); }
-    if (employees().some(function (e) { return (e.first + " " + e.last).toLowerCase() === (first + " " + last).toLowerCase() && e.active !== false; })) fail("There's already an account with that name.");
     var isMgr = inv.role === "manager";
+    if (isMgr) { var pwErr = pwProblem(req.password); if (pwErr) fail(pwErr); }      // managers have a password; employees only a PIN
+    if (req.pin != null || !isMgr) { var pinErr = pinProblem(req.pin); if (pinErr) fail(pinErr); }
+    if (employees().some(function (e) { return (e.first + " " + e.last).toLowerCase() === (first + " " + last).toLowerCase() && e.active !== false; })) fail("There's already an account with that name.");
     var e = { id: id() + id(), first: first, last: last, position: String(req.position || (isMgr ? "Office Manager" : "")).trim(), admin: isMgr, hourly: isMgr ? req.hourly !== false : true, active: true, created: env.now(), ptoStart: 0, sickStart: 0 };
-    var salt = env.rand(16);
     save("employees/" + e.id + ".json", e);
-    save("auth/emp-" + e.id, { salt: salt, hash: hashPw(req.password, salt), mustChange: false });
+    if (isMgr) newPw(e.id, req.password, false);
     if (req.pin != null) setPinFor(e.id, req.pin);
     inv.used = e.id; inv.usedAt = env.now(); save("invites/" + inv.code, inv);
     if (inv.phone) { d.emp = e.id; d.status = "allowed"; save("devices/" + d.id + ".json", d); }
@@ -939,17 +938,18 @@ function MpcServer(store, env) {
     if (d.emp && d.emp !== e.id) fail("This phone belongs to someone else.", "denied");
     var a = obj("auth/emp-" + e.id), tok;
     if (req.pin != null) {                    // the 6-digit PIN: for clocking in and out (and confirming hours)
-      if (!a || !a.pinHash) fail("You haven't made a PIN yet. Sign in with your password once to make one.", "nopin");
+      if (!a || !a.pinHash) fail(e.admin ? "You haven't made a PIN yet. Sign in with your password once to make one." : "You don't have a PIN yet. Ask your manager to set one up.", "nopin");
       var pt = Number(env.cacheGet("ptry:" + e.id) || 0);
-      if (pt >= 5) fail("Too many wrong PINs. Sign in with your password, or wait 10 minutes.", "locked");
+      if (pt >= 5) fail(e.admin ? "Too many wrong PINs. Sign in with your password, or wait 10 minutes." : "Too many wrong PINs. Wait 10 minutes, or ask your manager to reset your PIN.", "locked");
       if (hashPw(String(req.pin), a.pinSalt) !== a.pinHash) { env.cachePut("ptry:" + e.id, String(pt + 1), 600); fail("That PIN isn't right. Try again.", "badpin"); }
       env.cacheDel("ptry:" + e.id);
       tok = env.rand(24);
-      env.cachePut("s:" + tok, JSON.stringify({ emp: e.id, dev: d.id, pin: true }), SESSION_SECONDS);
-      return { tok: tok, emp: e, pin: true, hasPin: true, now: env.now() };
+      env.cachePut("s:" + tok, JSON.stringify({ emp: e.id, dev: d.id, pin: !!e.admin }), SESSION_SECONDS);   // a manager's PIN only clocks in and out
+      return { tok: tok, emp: e, pin: !!e.admin, hasPin: true, mustChange: !!a.pinMustChange, now: env.now() };
     }
     var tries = Number(env.cacheGet("try:" + e.id) || 0);
     if (tries >= 8) fail("Too many wrong passwords. Wait 10 minutes and try again.", "locked");
+    if (a && !a.hash) fail("Use your 6-digit PIN to sign in.", "usepin");
     if (!a || hashPw(String(req.password || ""), a.salt) !== a.hash) { env.cachePut("try:" + e.id, String(tries + 1), 600); fail("That password isn't right. Try again.", "badpw"); }
     env.cacheDel("try:" + e.id); env.cacheDel("ptry:" + e.id);
     tok = env.rand(24);
@@ -967,9 +967,17 @@ function MpcServer(store, env) {
   };
   A.setPin = function (req) {
     var u = session(req); if (u.pin) fail("Sign in with your password to change your PIN.", "denied");
+    var a = obj("auth/emp-" + u.emp.id) || {};
+    if (!u.emp.admin && a.pinHash && !a.pinMustChange && hashPw(String(req.old || ""), a.pinSalt) !== a.pinHash) fail("Your current PIN isn't right.", "badpin");
     var err = pinProblem(req.pin); if (err) fail(err);
-    setPinFor(u.emp.id, req.pin); env.cacheDel("ptry:" + u.emp.id);
+    setPinFor(u.emp.id, req.pin); setAuth(u.emp.id, { pinMustChange: false }); env.cacheDel("ptry:" + u.emp.id);
     return {};
+  };
+  function tempPin() { var p; do { p = String(100000 + parseInt(env.rand(4), 16) % 900000); } while (pinProblem(p)); return p; }
+  A.resetPin = function (req) {         // a manager gives someone a temporary PIN; they pick their own at their next sign-in
+    session(req, true); var e = emp(req.emp); if (!e) fail("Not found.");
+    var p = tempPin(); setPinFor(e.id, p); setAuth(e.id, { pinMustChange: true }); env.cacheDel("ptry:" + e.id);
+    return { temp: p };
   };
   A.resetPassword = function (req) {
     var u = session(req, true); var e = emp(req.emp); if (!e) fail("Not found.");
@@ -992,15 +1000,16 @@ function MpcServer(store, env) {
     var rs = env.rand(16); s.recovery = { salt: rs, hash: mpcSha256(rs + ":" + String(req.code || "").toUpperCase().replace(/[^A-Z0-9]/g, "")) };
     save("settings.json", s); return {};
   };
-  A.addEmployee = function (req) {      // manager adds someone without an invite (temporary password)
+  A.addEmployee = function (req) {      // manager adds someone without an invite (temporary PIN, plus a temporary password for a manager)
     var u = session(req, true);
     var e = req.e || {}; var first = String(e.first || "").trim(), last = String(e.last || "").trim();
     if (!first || !last) fail("Type a first and last name.");
-    var temp = String(req.temp || ""); if (temp.length < 6) fail("The temporary password needs at least 6 characters.");
+    var temp = String(req.temp || ""); if (e.admin && temp.length < 6) fail("The temporary password needs at least 6 characters.");
     var n = { id: id() + id(), first: first, last: last, position: String(e.position || "").trim(), admin: !!e.admin, hourly: e.hourly !== false, active: true, created: env.now(), ptoStart: 0, sickStart: 0 };
-    var salt = env.rand(16);
-    save("employees/" + n.id + ".json", n); save("auth/emp-" + n.id, { salt: salt, hash: hashPw(temp, salt), mustChange: true });
-    return { emp: n };
+    save("employees/" + n.id + ".json", n);
+    if (e.admin) newPw(n.id, temp, true);
+    var p = tempPin(); setPinFor(n.id, p); setAuth(n.id, { pinMustChange: true });
+    return { emp: n, tempPin: p };
   };
   A.invite = function (req) {
     session(req, true);
@@ -1282,7 +1291,7 @@ const pwHint = '<p class="hint">' + PW_RULES + '</p>';
 const pinProblem = (a, b) => !/^[0-9]{6}$/.test(a) ? "The PIN needs exactly 6 numbers." : /^(.)\1{5}$/.test(a) ? "Pick a PIN that isn't the same number 6 times."
   : "0123456789".includes(a) || "9876543210".includes(a) ? "Pick a PIN that isn't a straight run like 123456." : a !== b ? "The two PINs don't match." : "";
 const pinField = (id, label) => '<div class="field"><label for="' + id + '">' + label + '</label><input type="password" id="' + id + '" class="pin-in" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off"></div>';
-const pinHint = '<p class="hint">6 numbers, used to clock in and out. Not the same number six times, and not a run like 123456.</p>';
+const pinHint = '<p class="hint">6 numbers you\'ll type to sign in and clock in or out. Not the same number six times, and not a run like 123456.</p>';
 
 /* ================================================================ data */
 const D = { settings: null, emps: [] };
@@ -1593,20 +1602,18 @@ async function viewJoin(code) {
     '<div class="grid2"><div class="field"><label for="n-first">First name</label><input type="text" id="n-first" autocomplete="given-name" value="' + esc((inv.name || "").split(" ")[0] || "") + '"></div>' +
     '<div class="field"><label for="n-last">Last name</label><input type="text" id="n-last" autocomplete="family-name" value="' + esc((inv.name || "").split(" ").slice(1).join(" ")) + '"></div></div>' +
     '<div class="field"><label for="n-pos">Position</label><input type="text" id="n-pos" autocomplete="off"></div>' +
-    '<div class="grid2"><div class="field"><label for="n-pw">Password</label><input type="password" id="n-pw" autocomplete="new-password"></div>' +
-    '<div class="field"><label for="n-pw2">Type it again</label><input type="password" id="n-pw2" autocomplete="new-password"></div></div>' + pwHint +
     '<div class="grid2">' + pinField("n-pin", "6-digit PIN") + pinField("n-pin2", "Type it again") + '</div>' + pinHint +
     '<p class="err" id="n-err"></p><button class="btn btn-primary btn-lg btn-block" type="button" id="n-go">Make my account</button>');
   $("#n-go").addEventListener("click", async () => {
     const first = $("#n-first").value.trim(), last = $("#n-last").value.trim(), position = $("#n-pos").value.trim();
-    const err = !first || !last ? "Type your first and last name." : !position ? "Type your position." : pwProblem($("#n-pw").value, $("#n-pw2").value) || pinProblem($("#n-pin").value, $("#n-pin2").value);
+    const err = !first || !last ? "Type your first and last name." : !position ? "Type your position." : pinProblem($("#n-pin").value, $("#n-pin2").value);
     if (err) { $("#n-err").textContent = err; return; }
     const btn = $("#n-go"); btn.disabled = true;
     try {
-      const made = await api("createAccount", { code, first, last, position, password: $("#n-pw").value, pin: $("#n-pin").value });
+      const made = await api("createAccount", { code, first, last, position, pin: $("#n-pin").value });
       const h = await api("hello");
       if (h.device.status !== "allowed") { toast("Your account is ready."); return viewPending(); }
-      await signInWith(made.emp.id, $("#n-pw").value);
+      await signInWith(made.emp.id, null, $("#n-pin").value);
       await logChange("New account: " + first + " " + last + " (" + position + ")");
       await notifyManagers("New account made: " + first + " " + last + " (" + position + "). If you don't know this person, mark them inactive in Team.", { v: "manage", tab: "team" });
       toast("Welcome, " + first + "! Your account is ready."); go("me");
@@ -1732,15 +1739,16 @@ async function signInWith(empId, password, pin) {
 /* tapping your name: the 6-digit PIN for clocking in and out; the password for everything else */
 async function viewSignIn({ id, phone, pw, why }) {
   const emp = (D.board || []).find(e => e.id === id); if (!emp) return go("home");
-  const usePin = emp.hasPin && emp.hourly !== false && !pw;
+  const usePin = emp.admin ? emp.hasPin && emp.hourly !== false && !pw : !!emp.hasPin;   // employees have only a PIN; managers also a password
   centerCard((phone && !pw ? "" : backBtn(phone ? "Back" : "Not you?")) +
     '<div class="who-big"><span class="avatar">' + esc(initials(emp)) + '</span><div><h2>' + esc(fullName(emp)) + '</h2><p class="muted">' + esc(emp.position || "") + '</p></div></div>' +
     (why ? '<div class="note"><span>' + esc(why) + '</span></div>' : "") +
     (usePin
       ? pinField("pin", "Your 6-digit PIN") + '<p class="err" id="err"></p>' +
         '<button class="btn btn-primary btn-lg btn-block" type="button" id="go">Continue</button>' +
-        '<button class="btn btn-text" type="button" id="usepw">Use my password instead</button>' +
-        '<p class="hint" style="text-align:center">Use your password to ask for time off, fix a missed punch or change your PIN' + (emp.admin ? ", and for the manager pages" : "") + '.</p>'
+        (emp.admin ? '<button class="btn btn-text" type="button" id="usepw">Use my password instead</button>' +
+          '<p class="hint" style="text-align:center">Your PIN clocks you in and out. Use your password for the manager pages, time off and changes.</p>'
+          : '<button class="btn btn-text" type="button" id="forgotpin">Forgot your PIN?</button>')
       : '<div class="field"><label for="pw">Password</label><input type="password" id="pw" autocomplete="current-password"></div>' +
         (emp.hourly !== false && !emp.hasPin ? '<p class="hint">After you sign in, you\'ll make a 6-digit PIN so clocking in and out is quicker.</p>' : "") +
         '<p class="err" id="err"></p>' +
@@ -1755,10 +1763,10 @@ async function viewSignIn({ id, phone, pw, why }) {
     if (busy) return; busy = true;
     const btn = $("#go"); btn.disabled = true; $("#err").textContent = "";
     try {
-      if (usePin) { await signInWith(emp.id, null, box.value); go("me"); return; }
+      if (usePin) { const r = await signInWith(emp.id, null, box.value); if (r.mustChange) await makePin("temp"); go("me"); return; }
       const r = await signInWith(emp.id, box.value);
       if (r.mustChange) await changePassword(true);
-      if (!r.hasPin && S.emp.hourly !== false) await makePin(true);
+      if (!r.hasPin && S.emp.hourly !== false) await makePin("first");
       go(S.emp.hourly === false ? "manage" : "me", { tab: "cards" });
     } catch (e) { busy = false; btn.disabled = false; $("#err").textContent = e.message; if (usePin) box.value = ""; else box.select(); box.focus(); }
   };
@@ -1766,6 +1774,7 @@ async function viewSignIn({ id, phone, pw, why }) {
   box.addEventListener("keydown", (e) => { if (e.key === "Enter") tryIt(); });
   if (usePin) box.addEventListener("input", () => { box.value = box.value.replace(/[^0-9]/g, "").slice(0, 6); if (box.value.length === 6) tryIt(); });
   if ($("#usepw")) $("#usepw").addEventListener("click", () => go("signin", { id, phone, pw: true }));
+  if ($("#forgotpin")) $("#forgotpin").addEventListener("click", () => alertBox("Forgot your PIN?", "Your manager can give you a temporary PIN from the Team page. You'll pick a new one the next time you sign in."));
   if ($("#usepin")) $("#usepin").addEventListener("click", () => go("signin", { id, phone }));
   if ($("#forgot")) $("#forgot").addEventListener("click", async () => {
     if (!emp.admin) return alertBox("Forgot your password?", "Your manager can reset it for you in Team. You'll pick a new password the next time you sign in.");
@@ -1784,13 +1793,16 @@ function needPassword(why) {
   const id = S.emp.id, t = S.tok; S.emp = null; S.tok = null; S.pin = false; Mirror.clear(); paintBar(); if (t) api("logout", { tok: t }).catch(() => {});
   go("signin", { id, phone: !!Conn.phone, pw: true, why });
 }
-async function makePin(forced) {
-  return ask({ title: forced ? "Make your 6-digit PIN" : "Change your PIN", html: (forced ? '<p class="muted">You\'ll use it to clock in and out, instead of typing your password each time. Keep it to yourself.</p>' : "") +
-    '<div class="grid2">' + pinField("np", "New PIN") + pinField("np2", "Type it again") + '</div>' + pinHint + '<p class="err" id="perr"></p>',
-    buttons: [{ label: forced ? "Later" : "Cancel", value: false }, { label: "Save PIN", value: true, kind: "btn-primary", check: async () => {
+/* mode: "first" (can wait), "temp" (must replace a temporary PIN), "change" (from My Time) */
+async function makePin(mode) {
+  const needOld = mode === "change" && !S.emp.admin;
+  return ask({ title: mode === "change" ? "Change your PIN" : mode === "temp" ? "Pick your own PIN" : "Make your 6-digit PIN",
+    html: (mode === "first" ? '<p class="muted">You\'ll use it to clock in and out, instead of typing your password each time. Keep it to yourself.</p>' : mode === "temp" ? '<p class="muted">You signed in with a temporary PIN. Pick your own now, and keep it to yourself.</p>' : "") +
+    (needOld ? pinField("op", "Current PIN") : "") + '<div class="grid2">' + pinField("np", "New PIN") + pinField("np2", "Type it again") + '</div>' + pinHint + '<p class="err" id="perr"></p>',
+    buttons: (mode === "temp" ? [] : [{ label: mode === "first" ? "Later" : "Cancel", value: false }]).concat([{ label: "Save PIN", value: true, kind: "btn-primary", check: async () => {
       const p = pinProblem($("#np").value, $("#np2").value); if (p) { $("#perr").textContent = p; return false; }
-      try { await api("setPin", { pin: $("#np").value }); return true; } catch (e) { $("#perr").textContent = e.message; return false; }
-    } }] }).then(v => { if (v) toast("PIN saved. Use it next time you clock in or out."); return v; });
+      try { await api("setPin", { pin: $("#np").value, old: needOld ? $("#op").value : undefined }); return true; } catch (e) { $("#perr").textContent = e.message; return false; }
+    } }]) }).then(v => { if (v) toast("PIN saved. Use it next time you sign in."); return v; });
 }
 async function changePassword(forced) {
   return ask({ title: forced ? "Choose a new password" : "Change your password", html: (forced ? '<p class="muted">Your password was reset. Choose a new one that only you know.</p>' : "") +
@@ -1867,7 +1879,7 @@ async function viewMe(opts = {}) {
     '<div class="row no-print">' + (open ? '<button class="btn btn-secondary" type="button" id="ask">Request time off or a fix</button>' : "") +
     (confirmed ? '<span class="tag ok">You confirmed these hours</span>' : canConfirm ? '<button class="btn btn-primary" type="button" id="confirm">Confirm my hours</button>' : "") + '</div></div>' +
     (mine.length ? '<div class="card"><div class="card-head"><h3>My requests</h3></div><div class="list">' + mine.map(reqRow).join("") + '</div></div>' : "") +
-    (pinMode ? "" : '<div class="row no-print"><button class="btn btn-text" type="button" id="chpw">Change my password</button><button class="btn btn-text" type="button" id="chpin">Change my PIN</button></div>');
+    (pinMode ? "" : '<div class="row no-print">' + (emp.admin ? '<button class="btn btn-text" type="button" id="chpw">Change my password</button>' : "") + '<button class="btn btn-text" type="button" id="chpin">Change my PIN</button></div>');
   wireNav();
   if ($("#punch")) $("#punch").addEventListener("click", async (e) => {
     const b = e.currentTarget; b.disabled = true;
@@ -1899,7 +1911,7 @@ async function viewMe(opts = {}) {
   });
   for (const id of ["#confirm", "#confirm-top"]) if ($(id)) $(id).addEventListener("click", async () => { if (await confirmHours(w, false)) go("me", { wk }); });
   if ($("#chpw")) $("#chpw").addEventListener("click", () => changePassword(false));
-  if ($("#chpin")) $("#chpin").addEventListener("click", () => makePin(false));
+  if ($("#chpin")) $("#chpin").addEventListener("click", () => makePin("change"));
 }
 /* the employee agrees their hours are right (asked again on Thursday and Friday until it's done) */
 async function confirmHours(w, afterPunch) {
@@ -2384,7 +2396,7 @@ async function inviteDialog(role) {
   const link = joinLink(r.code);
   const first = name.split(" ")[0];
   const body = dev ? "Open this link on the office computer to connect it to the Masterpiece Time Clock:\n\n" + link
-    : "Hi" + (first ? " " + first : "") + ",\n\nHere's your invite to the Masterpiece Time Clock. " + (phone ? "Open this link on your phone" : "Open this link on an office computer") + ", then make your account with your name, position, a password and a 6-digit PIN:\n\n" + link + "\n\nThe link works once to make your account. After that, just sign in with your name and password." + (phone ? " Tip: add the page to your home screen so it's one tap away." : "");
+    : "Hi" + (first ? " " + first : "") + ",\n\nHere's your invite to the Masterpiece Time Clock. " + (phone ? "Open this link on your phone" : "Open this link on an office computer") + ", then make your account with your name, position and a 6-digit PIN:\n\n" + link + "\n\nThe link works once to make your account. After that, just sign in with your name and password." + (phone ? " Tip: add the page to your home screen so it's one tap away." : "");
   await logChange(dev ? "Made a link to connect another office computer" : "Invited " + (name || "an employee") + (phone ? " (phone)" : ""));
   await ask({ title: dev ? "Link ready" : "Invite ready", wide: true, html: '<div class="field"><label for="il">Link</label><input type="text" id="il" readonly value="' + esc(link) + '"></div>' +
     '<p class="hint">' + (dev ? "It works on one computer." : "It makes one account. Opening it again on another office computer just asks you to allow that computer.") + '</p>' +
@@ -2402,20 +2414,27 @@ async function editEmployee(emp) {
     '<div class="grid2"><div class="field"><label for="ep">Position</label><input type="text" id="ep" value="' + esc(e.position) + '"></div><div class="field"><label for="epid">Payroll company ID (optional)</label><input type="text" id="epid" value="' + esc(e.payrollId || "") + '"></div></div>' +
     '<label class="check"><input type="checkbox" id="eh"' + (e.hourly !== false ? " checked" : "") + '><span><b>Hourly</b><span class="hint">Shows on the time clock and in weekly hours.</span></span></label>' +
     '<label class="check"><input type="checkbox" id="ea"' + (e.admin ? " checked" : "") + '><span><b>Manager</b><span class="hint">Can approve requests, fix time cards and reset passwords.</span></span></label>' +
-    (isNew ? '<div class="field"><label for="et">Temporary password</label><input type="text" id="et" value="mpc-' + rnd().slice(0, 5) + '"><span class="hint">They choose their own the first time they sign in.</span></div>' :
+    (isNew ? '<div class="field" id="et-wrap" hidden><label for="et">Temporary manager password</label><input type="text" id="et" value="mpc-' + rnd().slice(0, 5) + '"><span class="hint">Managers also have a password, for the manager pages. They choose their own the first time they use it.</span></div>' +
+      '<p class="hint">You\'ll get a temporary PIN to give them. They pick their own the first time they sign in.</p>' :
       '<label class="check"><input type="checkbox" id="ex"' + (e.active === false ? "" : " checked") + '><span><b>Active</b><span class="hint">Uncheck when someone leaves. Their time cards stay.</span></span></label>' +
       '<div class="sep"></div><div class="row"><span><b>PTO left:</b> ' + hrs(bal.pto) + ' h · <b>Sick left:</b> ' + hrs(bal.sick) + ' h</span></div>' +
       '<div class="grid2"><div class="field"><label for="bp">Add PTO hours (use − to take away)</label><input type="number" id="bp" step="0.25" placeholder="0"></div><div class="field"><label for="bs">Add sick hours (use − to take away)</label><input type="number" id="bs" step="0.25" placeholder="0"></div></div>' +
       '<div class="field"><label for="bn">Reason for the balance change</label><input type="text" id="bn" placeholder="Starting balance, or a correction"></div>' +
-      '<div class="sep"></div><div class="row"><button class="btn btn-secondary mini" type="button" id="reset-pw">Reset password</button></div>') +
+      '<div class="sep"></div><div class="row"><button class="btn btn-secondary mini" type="button" id="reset-pin">Reset PIN</button>' + (e.admin ? '<button class="btn btn-secondary mini" type="button" id="reset-pw">Reset password</button>' : "") + '</div>') +
     '<p class="err" id="eerr"></p>',
     buttons: [{ label: "Cancel", value: false }, { label: isNew ? "Add employee" : "Save", value: true, kind: "btn-primary", check: () => {
       if (!$("#ef").value.trim() || !$("#el").value.trim()) { $("#eerr").textContent = "Type a first and last name."; return false; }
       if (!isNew && e.admin && !$("#ea").checked && admins().filter(a => a.id !== e.id).length === 0) { $("#eerr").textContent = "There has to be at least one manager."; return false; }
       if (!isNew && e.admin && $("#ex") && !$("#ex").checked && admins().filter(a => a.id !== e.id).length === 0) { $("#eerr").textContent = "There has to be at least one active manager."; return false; }
-      if (isNew && $("#et").value.length < 6) { $("#eerr").textContent = "The temporary password needs at least 6 characters."; return false; }
+      if (isNew && $("#ea").checked && $("#et").value.length < 6) { $("#eerr").textContent = "The temporary password needs at least 6 characters."; return false; }
       return true;
     } }],
+  });
+  if ($("#et-wrap")) $("#ea").addEventListener("change", () => { $("#et-wrap").hidden = !$("#ea").checked; });
+  if ($("#reset-pin")) $("#reset-pin").addEventListener("click", async () => {
+    let r; try { r = await api("resetPin", { emp: e.id }); } catch (err) { $("#eerr").textContent = err.message; return; }
+    await logChange("Reset " + fullName(e) + "'s PIN");
+    const box = $("#eerr"); box.style.color = "var(--good)"; box.textContent = "Temporary PIN: " + r.temp + ". Give it to " + e.first + "; they'll pick their own when they sign in.";
   });
   if ($("#reset-pw")) $("#reset-pw").addEventListener("click", async () => {
     const tp = "mpc-" + rnd().slice(0, 5);
@@ -2426,11 +2445,16 @@ async function editEmployee(emp) {
   const v = await pending;
   if (v === null || v === false) return;
   e.first = $("#ef").value.trim(); e.last = $("#el").value.trim(); e.position = $("#ep").value.trim(); e.hourly = $("#eh").checked; e.admin = $("#ea").checked; e.payrollId = $("#epid").value.trim(); delete e.isNew;
-  if (isNew) { const tp = $("#et").value; const made = await api("addEmployee", { e, temp: tp }); Mirror.set("employees/" + made.emp.id + ".json", JSON.stringify(made.emp)); await syncNow(); if (e.payrollId) await saveEmp(Object.assign({}, made.emp, { payrollId: e.payrollId })); await logChange("Added employee " + fullName(e)); await alertBox("Employee added", fullName(e) + "'s temporary password is: " + tp + ". They'll choose their own the first time they sign in."); }
+  if (isNew) { const tp = $("#et").value; const made = await api("addEmployee", { e, temp: e.admin ? tp : "" }); Mirror.set("employees/" + made.emp.id + ".json", JSON.stringify(made.emp)); await syncNow(); if (e.payrollId) await saveEmp(Object.assign({}, made.emp, { payrollId: e.payrollId })); await logChange("Added employee " + fullName(e)); await alertBox("Employee added", "Give " + e.first + " this temporary PIN: " + made.tempPin + (e.admin ? ", and this temporary manager password: " + tp : "") + ". They'll pick their own the first time they sign in."); }
   else {
     e.active = $("#ex").checked;
     const bp = Number($("#bp").value) || 0, bs = Number($("#bs").value) || 0, note = $("#bn").value.trim() || "Balance change";
     await saveEmp(e);
+    if (e.admin && !emp.admin) {   // a new manager needs a password for the manager pages
+      const tp = "mpc-" + rnd().slice(0, 5);
+      try { await api("resetPassword", { emp: e.id, temp: tp }); await alertBox(fullName(e) + " is now a manager", "Managers also have a password, for the manager pages. Give " + e.first + " this temporary one: " + tp + ". They'll choose their own the first time they use it."); }
+      catch (err) { showError(err); }
+    }
     if (bp) await addLedger(e.id, "pto", bp, note);
     if (bs) await addLedger(e.id, "sick", bs, note);
     await logChange("Updated " + fullName(e) + (bp ? ", PTO " + (bp > 0 ? "+" : "") + hrs(bp) + " h" : "") + (bs ? ", sick " + (bs > 0 ? "+" : "") + hrs(bs) + " h" : "") + (bp || bs ? " (" + note + ")" : ""));
