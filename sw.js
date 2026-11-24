@@ -1,6 +1,6 @@
 // Offline support: keeps a copy of the program so it opens without internet.
 // A new version (new cache name) replaces the old copy the next time the program is opened online.
-const CACHE = "mpc-timeclock-2.1.1";
+const CACHE = "mpc-timeclock-2.2.0";
 const FILES = [
  "./",
  "index.html",

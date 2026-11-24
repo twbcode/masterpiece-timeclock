@@ -1,6 +1,20 @@
 # Masterpiece Time Clock
 
-Clock in and out, time off, overtime approvals and weekly payroll hours for Masterpiece Construction Experts.
+Clock in and out, time off, overtime approvals, weekly payroll and time card summaries for Masterpiece Construction Experts.
 
-- Open it in Chrome or Edge on an office computer: https://twbcode.github.io/masterpiece-timeclock/
-- Time cards are saved only in the shared Google Drive folder chosen on each office computer. Nothing about employees is stored on this website.
+- The time clock: https://twbcode.github.io/masterpiece-timeclock/
+- Owner setup page: https://twbcode.github.io/masterpiece-timeclock/#owner
+
+## How it's set up
+
+Records live in a private Google Apps Script server in the owner's Google account (a Google Sheet only the owner can open). The website keeps no employee data. Passwords and PINs are checked on that server.
+
+- Employees sign in with a 6-digit PIN to clock in and out (and confirm their hours). Their password is for time off requests, fixing punches and changing the PIN. Managers use their password for the manager pages.
+- Only office computers the manager allows can be used, plus each field worker's own phone (from their phone invite). Phone punches save the phone's location; office computers don't.
+- Every Thursday at 5 PM Boise time the server emails the week's payroll sheet (spreadsheet + PDF) to the address in Settings → Payroll email. If payroll wasn't done by then, it does it with each person's usual hours for Friday.
+
+## Updating the server code
+
+When `Code.gs.txt` changes: open the Apps Script project, replace all the code with the new `Code.gs.txt`, save, then Deploy → Manage deployments → pencil (Edit) → Version: New version → Deploy. The web app address stays the same. If Google asks for permission again, allow it.
+
+If the Thursday email ever stops, run `setUpThursdayEmail` once from the Apps Script editor.

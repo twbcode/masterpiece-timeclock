@@ -389,6 +389,11 @@ details.acc[open] .acc-chev { transform: rotate(90deg); }
 ul.plain { margin: 0 0 8px; padding-left: 18px; display: grid; gap: 4px; font-size: 14px; }
 .rp-callout { margin: 0; padding: 9px 12px; border: 1px solid #d9b45a; background: #fdf6e3; border-radius: 8px; font-size: 13.5px; }
 @media print { .rp-callout { background: none; } }
+/* PIN */
+.pin-in { font-size: 26px; letter-spacing: .45em; text-align: center; font-variant-numeric: tabular-nums; }
+.field .pin-in { max-width: 260px; }
+a.loc { font-size: 12.5px; white-space: nowrap; margin-left: 4px; }
+a.loc { color: var(--accent); text-decoration: none; } a.loc:hover { text-decoration: underline; }
 
 </style>
 
@@ -419,13 +424,291 @@ ul.plain { margin: 0 0 8px; padding-left: 18px; display: grid; gap: 4px; font-si
 
 <script>
 /* ================================================================================================
+   Hours and payroll math, shared by the time clock page and the private server, so the Thursday
+   5 PM email shows exactly what the page shows. Dates are worked out in the office's local time.
+   ctx: { off(t) -> minutes behind UTC (like Date.getTimezoneOffset), now() -> ms,
+          settings() -> settings object, rows(dir) -> [{ name, o }] for the records directly in that folder }
+   ================================================================================================ */
+function MpcPay(ctx) {
+  var OT_LIMIT = 40, PK = ["reg", "ot", "pto", "sick", "holiday", "total"];
+  var MON = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  var DOW = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  function r2(x) { return Math.round(x * 100) / 100; }
+  function hrs(x) { return (Math.round(x * 100) / 100).toFixed(2); }
+  function sgn(v) { return (v > 0 ? "+" : "") + hrs(v); }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function fullName(e) { return e ? (e.first + " " + e.last).trim() : "Someone"; }
+  function ZERO() { return { reg: 0, ot: 0, pto: 0, sick: 0, holiday: 0, total: 0 }; }
+  function now() { return ctx.now(); }
+
+  /* ---------- dates ---------- */
+  function utcKey(ms) { var d = new Date(ms); return d.getUTCFullYear() + "-" + pad2(d.getUTCMonth() + 1) + "-" + pad2(d.getUTCDate()); }
+  function keyUTC(k) { var p = k.split("-"); return Date.UTC(+p[0], +p[1] - 1, +p[2]); }
+  function dayKey(t) { return utcKey(t - ctx.off(t) * 60000); }
+  function addKey(k, n) { return utcKey(keyUTC(k) + n * 864e5); }
+  function dowOf(k) { return (new Date(keyUTC(k)).getUTCDay() + 6) % 7; }        // 0 = Monday
+  function weekOf(t) { var k = dayKey(t); return addKey(k, -dowOf(k)); }
+  function weekDays(wk) { var o = []; for (var i = 0; i < 7; i++) o.push(addKey(wk, i)); return o; }
+  function fridayOf(wk) { return addKey(wk, 4); }
+  function shiftWeek(wk, n) { return addKey(wk, 7 * n); }
+  function startOf(k) { var u = keyUTC(k); return u + ctx.off(u + ctx.off(u) * 60000) * 60000; }   // local midnight
+  function fmtTime(t) { var d = new Date(t - ctx.off(t) * 60000), h = d.getUTCHours(); return (h % 12 || 12) + ":" + pad2(d.getUTCMinutes()) + " " + (h < 12 ? "AM" : "PM"); }
+  function fmtDay(k) { var d = new Date(keyUTC(k)); return DOW[dowOf(k)].slice(0, 3) + ", " + MON[d.getUTCMonth()].slice(0, 3) + " " + d.getUTCDate(); }
+  function fmtDate(k) { var d = new Date(keyUTC(k)); return MON[d.getUTCMonth()].slice(0, 3) + " " + d.getUTCDate() + ", " + d.getUTCFullYear(); }
+  function fmtLong(k) { var d = new Date(keyUTC(k)); return DOW[dowOf(k)] + ", " + MON[d.getUTCMonth()] + " " + d.getUTCDate() + ", " + d.getUTCFullYear(); }
+  function fmtStamp(t) { return fmtDate(dayKey(t)) + ", " + fmtTime(t); }
+  function shortDay(k) { return DOW[dowOf(k)].slice(0, 3); }
+  function weekLc(wk) { return "week ending Friday, " + fmtDate(fridayOf(wk)); }
+  function weekRange(wk) { return fmtDay(wk) + " – " + fmtDay(fridayOf(wk)); }
+
+  /* ---------- records ---------- */
+  function settings() { return ctx.settings() || {}; }
+  function eventsFor(wk, empId) {
+    return ctx.rows("events/" + wk + "/" + empId).map(function (r) { var o = {}; for (var k in r.o) o[k] = r.o[k]; o.id = r.name.replace(/\.json$/, ""); return o; })
+      .sort(function (a, b) { return (a.created - b.created) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); });
+  }
+  function metaFor(wk) {
+    var out = ctx.rows("events/" + wk + "/_week").map(function (r) { return r.o; }).sort(function (a, b) { return a.created - b.created; });
+    var last = null; for (var i = out.length - 1; i >= 0; i--) if (out[i].type === "lock" || out[i].type === "unlock") { last = out[i]; break; }
+    return { locked: !!last && last.type === "lock", lock: last && last.type === "lock" ? last : null, history: out };
+  }
+
+  /* ---------- one person's week ---------- */
+  function roundT(t) { var m = Number(settings().round) || 0; return m ? Math.round(t / (m * 60000)) * m * 60000 : t; }
+  function holidaysIn(wk) { var days = weekDays(wk).slice(0, 5); return (settings().holidays || []).filter(function (h) { return days.indexOf(h.date) >= 0; }); }
+  function computeWeek(emp, wk, evs, nowT) {
+    if (nowT == null) nowT = now();
+    var voided = {}; evs.forEach(function (v) { if (v.type === "void") voided[v.target] = 1; });
+    var live = evs.filter(function (e) { return !voided[e.id]; });
+    var moves = {}; live.forEach(function (e) { if (e.type === "move") moves[e.target] = e.at; });
+    var days = weekDays(wk).map(function (k) { return { key: k, pairs: [], minutes: 0, entries: [], issues: [], worked: 0 }; });
+    function dayOf(t) { var k = dayKey(t); for (var i = 0; i < days.length; i++) if (days[i].key === k) return days[i]; return null; }
+    var punches = live.filter(function (e) { return e.type === "punch"; }).map(function (e) {
+      return { id: e.id, dir: e.dir, at: moves[e.id] != null ? moves[e.id] : e.at, how: e.how, by: e.by, moved: moves[e.id] != null, loc: e.loc || null, phone: !!e.phone, device: e.device || "" };
+    }).sort(function (a, b) { return a.at - b.at; });
+    var open = null, liveMin = 0, clockedIn = null, issues = [];
+    function addPair(i, o) {
+      var d = dayOf(i ? i.at : o.at); if (!d) return null;
+      var p = { "in": i, out: o };
+      if (i && o) { p.min = Math.max(0, (roundT(o.at) - roundT(i.at)) / 60000); d.minutes += p.min; }
+      d.pairs.push(p); return p;
+    }
+    punches.forEach(function (p) {
+      if (p.dir === "in") {
+        if (open) { var x = addPair(open, null); if (x) { x.bad = "No clock-out"; dayOf(open.at).issues.push("Clocked in at " + fmtTime(open.at) + " without clocking out"); } }
+        open = p;
+      } else if (open) { addPair(open, p); open = null; }
+      else { var y = addPair(null, p); if (y) { y.bad = "No clock-in"; dayOf(p.at).issues.push("Clocked out at " + fmtTime(p.at) + " without clocking in"); } }
+    });
+    if (open) {
+      var z = addPair(open, null);
+      if (z && dayKey(open.at) === dayKey(nowT) && nowT - open.at < 18 * 3600000) { z.live = true; clockedIn = open; liveMin = Math.max(0, (nowT - roundT(open.at)) / 60000); }
+      else if (z) { z.bad = "No clock-out"; dayOf(open.at).issues.push("Missed clock-out after " + fmtTime(open.at)); }
+    }
+    live.forEach(function (e) {   // hours added by the manager or approved requests
+      if (e.type !== "hours") return;
+      days.forEach(function (d) { if (d.key === e.date) d.entries.push({ id: e.id, cat: e.cat, hours: Number(e.hours) || 0, note: e.note || "", by: e.by }); });
+    });
+    holidaysIn(wk).forEach(function (h) {   // company holidays count automatically unless taken off for this person
+      if (emp.created && h.date < dayKey(emp.created)) return;   // not before they were added
+      var off = live.some(function (e) { return e.type === "holiday_off" && e.date === h.date; });
+      days.forEach(function (d) {
+        if (d.key === h.date && !off && !d.entries.some(function (x) { return x.cat === "holiday"; })) d.entries.push({ id: null, cat: "holiday", hours: Number(h.hours) || 0, note: h.name, auto: true });
+      });
+    });
+    var T = { worked: 0, pto: 0, sick: 0, holiday: 0 };
+    var sumCat = function (d, c) { return d.entries.filter(function (x) { return x.cat === c; }).reduce(function (s, x) { return s + x.hours; }, 0); };
+    days.forEach(function (d) {
+      d.worked = d.minutes / 60 + sumCat(d, "worked");
+      T.worked += d.worked; T.pto += sumCat(d, "pto"); T.sick += sumCat(d, "sick"); T.holiday += sumCat(d, "holiday");
+      d.issues.forEach(function (t) { issues.push(fmtDay(d.key) + ": " + t); });
+    });
+    var worked = r2(T.worked), reg = r2(Math.min(worked, OT_LIMIT)), ot = r2(Math.max(0, worked - OT_LIMIT));
+    var lastOf = function (type) { for (var i = live.length - 1; i >= 0; i--) if (live[i].type === type) return live[i]; return null; };
+    var otEv = lastOf("ot"), otApproved = otEv ? Number(otEv.hours) : null;
+    var otStatus = ot <= 0 ? "none" : otApproved == null ? "pending" : Math.abs(otApproved - ot) < 0.01 ? "approved" : "changed";
+    var sign = lastOf("signoff");
+    var changedAfterSign = sign ? live.some(function (e) { return e.created > sign.created && e.type !== "signoff"; }) : false;
+    var total = r2(reg + ot + T.pto + T.sick + T.holiday);
+    return { emp: emp, wk: wk, days: days, punches: punches, clockedIn: clockedIn, liveMin: liveMin, issues: issues, worked: worked, reg: reg, ot: ot, otApproved: otApproved, otStatus: otStatus,
+      pto: r2(T.pto), sick: r2(T.sick), holiday: r2(T.holiday), total: total, signed: sign || null, changedAfterSign: changedAfterSign };
+  }
+  function weekFor(emp, wk) { return computeWeek(emp, wk, eventsFor(wk, emp.id)); }
+  function snapOf(w) { return { reg: w.reg, ot: w.ot, pto: w.pto, sick: w.sick, holiday: w.holiday, total: w.total }; }
+
+  /* ---------- payroll ----------
+     Doing payroll locks the week and saves the hours paid. When it's done before the week is over (Thursday),
+     the rest of the week is estimated. Once the real times are in, any difference is added to the next payroll. */
+  function weekOver(wk) { return now() >= startOf(addKey(wk, 5)); }                         // from Saturday morning
+  function paidEarly(meta, wk) { return !!(meta && meta.locked && meta.lock.created < startOf(addKey(wk, 5))); }
+  function thursday5pm(wk) { return startOf(addKey(wk, 3)) + 17 * 3600000; }
+  function carriedFor(empId, wk, exceptWk) {   // corrections for wk already put into later payrolls
+    var sum = ZERO(), where = [], top = weekOf(now());
+    for (var x = shiftWeek(wk, 1), n = 0; x <= top && n < 12; x = shiftWeek(x, 1), n++) {
+      if (x === exceptWk) continue;
+      var m = metaFor(x), s = m.locked && m.lock.snapshot && m.lock.snapshot[empId];
+      ((s && s.corr) || []).forEach(function (c) {
+        if (c.wk !== wk) return;
+        PK.forEach(function (k) { sum[k] = r2(sum[k] + (Number(c[k]) || 0)); });
+        if (where.indexOf(x) < 0) where.push(x);
+      });
+    }
+    return { sum: sum, where: where };
+  }
+  function payState(emp, wk, w, meta, exceptWk) {   // what was paid, corrections since, and any difference still to pay
+    if (!meta.locked) return null;
+    var s = (meta.lock.snapshot || {})[emp.id] || null, p = s || ZERO(), act = snapOf(w), car = carriedFor(emp.id, wk, exceptWk);
+    var diff = {}; PK.forEach(function (k) { diff[k] = r2(act[k] - (Number(p[k]) || 0) - car.sum[k]); });
+    var over = weekOver(wk);
+    return { s: s, over: over, car: car, diff: diff, paid: r2((Number(p.total) || 0) + car.sum.total), open: over && PK.some(function (k) { return Math.abs(diff[k]) >= 0.01; }) };
+  }
+  function correctionsFor(emp, wk) {
+    var out = [];
+    for (var n = 10; n >= 1; n--) {
+      var v = shiftWeek(wk, -n); if (!weekOver(v)) continue;
+      var m = metaFor(v); if (!m.locked) continue;
+      var w = weekFor(emp, v), st = payState(emp, v, w, m, wk);
+      if (st && st.open) { var c = { wk: v, paid: st.paid, actual: w.total, missed: w.issues.length > 0 }; PK.forEach(function (k) { c[k] = st.diff[k]; }); out.push(c); }
+    }
+    return out;
+  }
+  function correctionsAll(wk, emps) {
+    var out = {}; emps.filter(function (e) { return e.hourly !== false; }).forEach(function (e) { var c = correctionsFor(e, wk); if (c.length) out[e.id] = c; });
+    return out;
+  }
+  function typicalDay(emp, wk, idx) {   // usual hours on that weekday, from the last 3 weeks
+    var vals = [], today = dayKey(now());
+    for (var n = 1; n <= 3; n++) {
+      var w = weekFor(emp, shiftWeek(wk, -n)); if (!(w.worked > 0)) continue;
+      var d = w.days[idx]; if (d.entries.some(function (x) { return x.cat === "pto" || x.cat === "sick" || x.cat === "holiday"; })) continue;
+      vals.push(d.worked);
+    }
+    if (!vals.length) {
+      var cur = weekFor(emp, wk);
+      var done = cur.days.slice(0, 5).filter(function (d) { return d.key < today && d.worked > 0; }).map(function (d) { return d.worked; });
+      vals.push(done.length ? done.reduce(function (a, b) { return a + b; }, 0) / done.length : 8);
+    }
+    return Math.round(vals.reduce(function (a, b) { return a + b; }, 0) / vals.length * 4) / 4;
+  }
+  function after5(k) { return now() >= startOf(k) + 17 * 3600000; }
+  function estimateDays(wk) {   // weekdays not worked yet (today counts as worked from 5 PM on)
+    var today = dayKey(now()); return weekDays(wk).slice(0, 5).filter(function (k) { return k > today || (k === today && !after5(today)); });
+  }
+  function liveHours(w, k) { return w.clockedIn && dayKey(w.clockedIn.at) === k ? w.liveMin / 60 : 0; }
+  function suggestFor(w, wk, k) {   // the hours to fill in for a day that isn't over yet
+    var today = dayKey(now()), i = weekDays(wk).indexOf(k), d = w.days[i];
+    var off = d.entries.filter(function (x) { return x.cat === "pto" || x.cat === "sick" || x.cat === "holiday"; }).reduce(function (a, x) { return a + x.hours; }, 0);
+    var doneToday = k === today && d.pairs.length && !d.pairs.some(function (p) { return p.live || p.bad; });
+    if (doneToday) return r2(d.worked);
+    return Math.max(0, typicalDay(w.emp, wk, i) - off);
+  }
+  function payPeople(wk, emps) {
+    return emps.filter(function (e) { return e.hourly !== false; }).map(function (e) { return weekFor(e, wk); })
+      .filter(function (w) { return w.emp.active !== false || w.total > 0; });
+  }
+  function soFar(w) { var est = estimateDays(w.wk); return r2(w.days.filter(function (d) { return est.indexOf(d.key) < 0; }).reduce(function (a, d) { return a + d.worked + liveHours(w, d.key); }, 0)); }
+  function makeSnapshot(people, estDays, estOf, corr) {
+    var snapshot = {};
+    people.forEach(function (w) {
+      var est = {}, worked = 0;
+      w.days.forEach(function (d) {
+        if (estDays.indexOf(d.key) >= 0) { var n = r2(Number(estOf(w.emp.id, d.key)) || 0); est[d.key] = n; worked += n; }
+        else worked += d.worked + liveHours(w, d.key);   // anyone still clocked in is paid for their time so far
+      });
+      worked = r2(worked); var reg = r2(Math.min(worked, OT_LIMIT)), ot = r2(Math.max(0, worked - OT_LIMIT));
+      var s = { worked: worked, reg: reg, ot: ot, pto: w.pto, sick: w.sick, holiday: w.holiday, total: r2(reg + ot + w.pto + w.sick + w.holiday) };
+      if (estDays.length) s.est = est;
+      snapshot[w.emp.id] = s;
+    });
+    Object.keys(corr || {}).forEach(function (id) {
+      if (!snapshot[id]) { snapshot[id] = ZERO(); snapshot[id].worked = 0; }
+      snapshot[id].corr = corr[id].map(function (c) { var o = { wk: c.wk, paid: c.paid, actual: c.actual }; PK.forEach(function (k) { o[k] = c[k]; }); return o; });
+    });
+    return snapshot;
+  }
+  function paidNotice(s, wk) {   // what each employee is told when their hours go to payroll
+    var est = Object.keys(s.est || {}).sort(), c = s.corr || [];
+    return "Your hours for " + weekLc(wk) + " went to payroll: " + hrs(s.total) + " h." +
+      (est.length ? " " + est.map(shortDay).join(" and ") + " " + (est.length > 1 ? "were" : "was") + " estimated; if your real hours are different, the difference is fixed on the next payroll." : "") +
+      (c.length ? " It also includes " + c.map(function (x) { return sgn(x.total) + " h for " + weekLc(x.wk); }).join(" and ") + "." : "");
+  }
+  function payrollData(meta, wk, emps) {
+    var snap = meta.lock.snapshot || {};
+    var find = function (id) { for (var i = 0; i < emps.length; i++) if (emps[i].id === id) return emps[i]; return null; };
+    var rows = Object.keys(snap).map(function (id) {
+      var emp = find(id) || { id: id, first: "(removed", last: "employee)" };
+      var s = snap[id], corr = s.corr || [], pay = {};
+      PK.forEach(function (k) { pay[k] = r2((Number(s[k]) || 0) + corr.reduce(function (a, c) { return a + (Number(c[k]) || 0); }, 0)); });
+      return { emp: emp, s: s, corr: corr, pay: pay };
+    }).sort(function (a, b) { return fullName(a.emp).localeCompare(fullName(b.emp)); });
+    var estDays = []; rows.forEach(function (r) { Object.keys(r.s.est || {}).forEach(function (k) { if (estDays.indexOf(k) < 0) estDays.push(k); }); }); estDays.sort();
+    var by = find(meta.lock.by);
+    return { wk: wk, rows: rows, estDays: estDays, by: meta.lock.by, byName: by ? fullName(by) : (meta.lock.auto ? "the time clock (automatically at 5 PM Thursday)" : ""), at: meta.lock.created };
+  }
+  function payNote(r) {
+    var est = Object.keys(r.s.est || {}).sort();
+    return [est.length ? est.map(function (k) { return shortDay(k) + " estimated " + hrs(r.s.est[k]) + " h"; }).join(", ") : "",
+      r.corr.length ? "Includes " + r.corr.map(function (c) { return sgn(c.total) + " h for week ending " + fmtDate(fridayOf(c.wk)); }).join(" and ") : ""].filter(Boolean).join(". ");
+  }
+  function payrollHtml(P, opts) {
+    opts = opts || {};
+    var anyId = P.rows.some(function (r) { return r.emp.payrollId; });
+    var T = ZERO(); P.rows.forEach(function (r) { PK.forEach(function (k) { T[k] = r2(T[k] + r.pay[k]); }); });
+    var allCorr = []; P.rows.forEach(function (r) { r.corr.forEach(function (c) { var o = { emp: r.emp }; for (var k in c) o[k] = c[k]; allCorr.push(o); }); });
+    var num = function (v) { return '<td class="num">' + hrs(v) + '</td>'; };
+    return '<section class="rp-page"><div class="rp-head">' + (opts.logo ? '<img src="' + esc(opts.logo) + '" alt="" class="rp-logo">' : "") + '<div><h1>Payroll Hours</h1><p>Masterpiece Construction Experts</p></div>' +
+      '<div class="rp-meta"><b>Week ending ' + esc(fmtLong(fridayOf(P.wk))) + '</b><span>' + esc(weekRange(P.wk)) + '</span>' + (P.at ? '<span>Prepared ' + esc(fmtStamp(P.at)) + (P.byName ? " by " + esc(P.byName) : "") + '</span>' : "") + '</div></div>' +
+      (P.estDays.length ? '<p class="rp-callout"><b>' + esc(P.estDays.map(fmtDay).join(" and ")) + (P.estDays.length > 1 ? " are" : " is") + ' estimated.</b> If the real hours are different, the difference is added to next week\'s payroll.</p>' : "") +
+      '<table class="rp-t"><thead><tr><th>Employee</th>' + (anyId ? '<th>Payroll ID</th>' : "") + '<th class="num">Regular</th><th class="num">Overtime</th><th class="num">PTO</th><th class="num">Sick</th><th class="num">Holiday</th><th class="num">Total hours</th></tr></thead><tbody>' +
+      P.rows.map(function (r) {
+        return '<tr><td><b>' + esc(fullName(r.emp)) + '</b>' + (payNote(r) ? '<div class="rp-sub">' + esc(payNote(r)) + '</div>' : "") + '</td>' + (anyId ? '<td>' + esc(r.emp.payrollId || "") + '</td>' : "") +
+          num(r.pay.reg) + num(r.pay.ot) + num(r.pay.pto) + num(r.pay.sick) + num(r.pay.holiday) + '<td class="num"><b>' + hrs(r.pay.total) + '</b></td></tr>';
+      }).join("") +
+      '</tbody><tfoot><tr><td>All employees</td>' + (anyId ? '<td></td>' : "") + num(T.reg) + num(T.ot) + num(T.pto) + num(T.sick) + num(T.holiday) + num(T.total) + '</tr></tfoot></table>' +
+      (allCorr.length ? '<h2 class="rp-h">Corrections included from earlier weeks</h2><table class="rp-t"><thead><tr><th>Employee</th><th>Week ending</th><th class="num">Paid then</th><th class="num">Actual</th><th class="num">Regular</th><th class="num">Overtime</th><th class="num">PTO</th><th class="num">Sick</th><th class="num">Holiday</th><th class="num">Difference</th></tr></thead><tbody>' +
+        allCorr.map(function (c) {
+          return '<tr><td>' + esc(fullName(c.emp)) + '</td><td>' + esc(fmtDate(fridayOf(c.wk))) + '</td>' + num(c.paid) + num(c.actual) +
+            ["reg", "ot", "pto", "sick", "holiday"].map(function (k) { return '<td class="num">' + (c[k] ? sgn(c[k]) : "") + '</td>'; }).join("") + '<td class="num"><b>' + sgn(c.total) + '</b></td></tr>';
+        }).join("") + '</tbody></table>' : "") +
+      '<ul class="rp-notes">' + (allCorr.length ? '<li>The hours in the first table already include the corrections.</li>' : "") + '<li>Overtime is hours worked over ' + OT_LIMIT + ' in the pay week.</li></ul></section>';
+  }
+  function csvCell(v) { return /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v); }
+  function payrollCsv(P) {
+    var rows = [["Employee", "Payroll ID", "Position", "Week ending", "Regular hours", "Overtime hours", "PTO hours", "Sick hours", "Holiday hours", "Total hours", "Notes"]];
+    P.rows.forEach(function (r) { rows.push([fullName(r.emp), r.emp.payrollId || "", r.emp.position || "", fridayOf(P.wk), hrs(r.pay.reg), hrs(r.pay.ot), hrs(r.pay.pto), hrs(r.pay.sick), hrs(r.pay.holiday), hrs(r.pay.total), payNote(r)]); });
+    return rows.map(function (r) { return r.map(csvCell).join(","); }).join("\r\n") + "\r\n";
+  }
+
+  return { OT_LIMIT: OT_LIMIT, PK: PK, ZERO: ZERO, r2: r2, hrs: hrs, sgn: sgn, esc: esc, fullName: fullName,
+    dayKey: dayKey, addKey: addKey, weekOf: weekOf, weekDays: weekDays, fridayOf: fridayOf, shiftWeek: shiftWeek, startOf: startOf,
+    fmtTime: fmtTime, fmtDay: fmtDay, fmtDate: fmtDate, fmtLong: fmtLong, fmtStamp: fmtStamp, shortDay: shortDay, weekLc: weekLc, weekRange: weekRange,
+    eventsFor: eventsFor, metaFor: metaFor, holidaysIn: holidaysIn, computeWeek: computeWeek, weekFor: weekFor, snapOf: snapOf,
+    weekOver: weekOver, paidEarly: paidEarly, thursday5pm: thursday5pm, carriedFor: carriedFor, payState: payState, correctionsFor: correctionsFor, correctionsAll: correctionsAll,
+    typicalDay: typicalDay, estimateDays: estimateDays, suggestFor: suggestFor, payPeople: payPeople, soFar: soFar, makeSnapshot: makeSnapshot, paidNotice: paidNotice,
+    payrollData: payrollData, payNote: payNote, payrollHtml: payrollHtml, payrollCsv: payrollCsv };
+}
+/* records grouped by folder, for MpcPay's ctx.rows */
+function mpcFolders(rows) {   // rows: [{ path, data }]
+  var idx = {};
+  rows.forEach(function (r) {
+    var i = r.path.lastIndexOf("/"); if (i < 0 || !/\.json$/.test(r.path)) return;
+    var dir = r.path.slice(0, i), o; try { o = typeof r.data === "string" ? JSON.parse(r.data) : r.data; } catch (e) { return; }
+    (idx[dir] = idx[dir] || []).push({ name: r.path.slice(i + 1), o: o });
+  });
+  Object.keys(idx).forEach(function (k) { idx[k].sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; }); });
+  return function (dir) { return idx[dir] || []; };
+}
+
+
+/* ================================================================================================
    Masterpiece Time Clock: the private server.
    The same code runs in two places:
      - Google Apps Script (the real thing), with records kept in a Google Sheet in the owner's account;
      - the browser preview and the automated tests, with records kept in the browser.
    It decides who may read and change what. Passwords are checked here, never on the computer.
    ================================================================================================ */
-var MPC_SERVER_VERSION = 1;
+var MPC_SERVER_VERSION = 2;
 
 /* ---------- SHA-256 (plain JavaScript, so it gives the same answer everywhere) ---------- */
 function mpcSha256(ascii) {
@@ -461,7 +744,8 @@ function mpcSha256(ascii) {
   return out;
 }
 
-/* env: { now(), rand(nBytes) -> hex, cacheGet(k), cachePut(k, v, seconds), cacheDel(k) }
+/* env: { now(), rand(nBytes) -> hex, cacheGet(k), cachePut(k, v, seconds), cacheDel(k),
+          tzOff(t) -> the office's minutes behind UTC, sendMail({ to, subject, html, csv: {name, text}, pdf: {name, html} }), ensureTrigger() -> true when the Thursday email is scheduled }
    store: { all() -> [{path, data, seq}], get(path) -> {path,data,seq}|null, put(path, dataString) -> seq, del(path) } */
 function MpcServer(store, env) {
   var PW_ROUNDS = 1500;
@@ -481,6 +765,9 @@ function MpcServer(store, env) {
   function config() { return obj("sys/config") || {}; }
   function employees() { return store.all().filter(function (r) { return /^employees\/[^/]+\.json$/.test(r.path); }).map(function (r) { return JSON.parse(r.data); }); }
   function emp(eid) { return obj("employees/" + eid + ".json"); }
+  function setAuth(eid, patch) { var a = obj("auth/emp-" + eid) || {}; for (var k in patch) a[k] = patch[k]; save("auth/emp-" + eid, a); }
+  function newPw(eid, pw, mustChange) { var salt = env.rand(16); setAuth(eid, { salt: salt, hash: hashPw(pw, salt), mustChange: !!mustChange }); }
+  function hasPin(eid) { var a = obj("auth/emp-" + eid); return !!(a && a.pinHash); }
   function pub(e) { return e && { id: e.id, first: e.first, last: e.last, position: e.position, admin: !!e.admin, hourly: e.hourly !== false, active: e.active !== false }; }
 
   /* ---------- devices (each computer or phone that may use the time clock) ---------- */
@@ -510,8 +797,9 @@ function MpcServer(store, env) {
     if (!e || e.active === false) fail("This account isn't active.", "signedout");
     if (d.emp && d.emp !== e.id) fail("This phone belongs to someone else.", "denied");
     if (managerOnly && !e.admin) fail("Only a manager can do that.", "denied");
+    if (managerOnly && s.pin) fail("Sign in with your password to do that.", "denied");
     env.cachePut("s:" + req.tok, JSON.stringify(s), SESSION_SECONDS);
-    return { emp: e, dev: d, admin: !!e.admin };
+    return { emp: e, dev: d, admin: !!e.admin && !s.pin, pin: !!s.pin };     // a PIN sign-in is only for clocking in and out
   }
 
   /* ---------- who may read what ---------- */
@@ -534,22 +822,25 @@ function MpcServer(store, env) {
   /* ---------- who may change what ---------- */
   function checkWrite(u, path, o, existing, req) {
     if (/^(auth|sys|devices|invites)\//.test(path)) fail("That can't be changed this way.", "denied");
+    var me = u.emp.id, m;
+    if ((m = /^events\/([^/]+)\/([^/]+)\/([^/]+)$/.exec(path)) && m[2] === me && !existing && o.type === "punch" && o.how === "clock" && (o.dir === "in" || o.dir === "out")) {
+      var now = env.now(); o.at = now; o.created = now;                        // the server's clock, not the computer's
+      o.device = u.dev.label || "";
+      if (u.dev.phone) { o.phone = true; o.loc = cleanLoc(o.loc); } else { delete o.loc; delete o.phone; }   // phones log where the punch happened
+      return "events/" + weekOf(now, req.tz) + "/" + me + "/" + now + "-" + id() + ".json";
+    }
     if (u.admin) {
       if (path === "settings.json" && existing) { var old = JSON.parse(existing.data); if (old.recovery) o.recovery = old.recovery; }
       if (/^employees\//.test(path)) { delete o.hash; delete o.salt; }
       return path;
     }
-    var me = u.emp.id, m;
     if ((m = /^events\/([^/]+)\/([^/]+)\/([^/]+)$/.exec(path))) {
       if (m[2] !== me || existing) fail("You can only add to your own time card.", "denied");
-      if (o.type === "punch" && o.how === "clock" && (o.dir === "in" || o.dir === "out")) {          // the server's clock, not the computer's
-        var now = env.now(); o.at = now; o.created = now;
-        return "events/" + weekOf(now, req.tz) + "/" + me + "/" + now + "-" + id() + ".json";
-      }
       if (o.type === "signoff") return path;
       fail("Only a manager can change time cards.", "denied");
     }
     if ((m = /^requests\/([^/]+)$/.exec(path))) {
+      if (u.pin) fail("Sign in with your password to send a request.", "denied");
       if (existing || o.emp !== me || o.status !== "pending") fail("Only a manager can decide requests.", "denied");
       return path;
     }
@@ -563,6 +854,19 @@ function MpcServer(store, env) {
     if (/^change log\//.test(path) && !existing) return path;
     fail("Only a manager can change that.", "denied");
   }
+
+  function cleanLoc(l) {
+    if (l && isFinite(l.lat) && isFinite(l.lng)) return { lat: Math.round(l.lat * 1e5) / 1e5, lng: Math.round(l.lng * 1e5) / 1e5, acc: Math.round(Number(l.acc) || 0) };
+    return { err: String((l && l.err) || "none").replace(/[^a-z]/g, "").slice(0, 12) || "none" };
+  }
+  function pinProblem(p) {
+    p = String(p == null ? "" : p);
+    if (!/^[0-9]{6}$/.test(p)) return "The PIN needs exactly 6 numbers.";
+    if (/^(.)\1{5}$/.test(p)) return "Pick a PIN that isn't the same number 6 times.";
+    if ("0123456789".indexOf(p) >= 0 || "9876543210".indexOf(p) >= 0) return "Pick a PIN that isn't a straight run like 123456.";
+    return "";
+  }
+  function setPinFor(eid, pin) { var salt = env.rand(16); setAuth(eid, { pinSalt: salt, pinHash: hashPw(String(pin), salt) }); }
 
   /* ---------- actions ---------- */
   var A = {};
@@ -596,12 +900,14 @@ function MpcServer(store, env) {
     var first = String(req.first || "").trim(), last = String(req.last || "").trim();
     if (!first || !last) fail("Type your first and last name.");
     var pwErr = pwProblem(req.password); if (pwErr) fail(pwErr);
+    if (req.pin != null) { var pinErr = pinProblem(req.pin); if (pinErr) fail(pinErr); }
     if (employees().some(function (e) { return (e.first + " " + e.last).toLowerCase() === (first + " " + last).toLowerCase() && e.active !== false; })) fail("There's already an account with that name.");
     var isMgr = inv.role === "manager";
     var e = { id: id() + id(), first: first, last: last, position: String(req.position || (isMgr ? "Office Manager" : "")).trim(), admin: isMgr, hourly: isMgr ? req.hourly !== false : true, active: true, created: env.now(), ptoStart: 0, sickStart: 0 };
     var salt = env.rand(16);
     save("employees/" + e.id + ".json", e);
     save("auth/emp-" + e.id, { salt: salt, hash: hashPw(req.password, salt), mustChange: false });
+    if (req.pin != null) setPinFor(e.id, req.pin);
     inv.used = e.id; inv.usedAt = env.now(); save("invites/" + inv.code, inv);
     if (inv.phone) { d.emp = e.id; d.status = "allowed"; save("devices/" + d.id + ".json", d); }
     if (isMgr && !obj("settings.json")) {
@@ -624,34 +930,51 @@ function MpcServer(store, env) {
       var ps = evs.filter(function (v) { return v.type === "punch" && !voided[v.id]; }).map(function (v) { return { dir: v.dir, at: moved[v.id] != null ? moved[v.id] : v.at }; }).sort(function (a, b) { return a.at - b.at; });
       var last = ps[ps.length - 1];
       var unread = rows.filter(function (r) { return r.path.indexOf("notes/" + e.id + "/") === 0 && !/read-todos/.test(r.path) && !JSON.parse(r.data).read; }).length;
-      return Object.assign(pub(e), { inSince: last && last.dir === "in" && dayOf(last.at, req.tz) === dayOf(now, req.tz) ? last.at : null, unread: unread });
+      return Object.assign(pub(e), { hasPin: hasPin(e.id), inSince: last && last.dir === "in" && dayOf(last.at, req.tz) === dayOf(now, req.tz) ? last.at : null, unread: unread });
     }) };
   };
   A.login = function (req) {
     var d = needDevice(req);
     var e = emp(req.emp); if (!e || e.active === false) fail("That account isn't active.");
     if (d.emp && d.emp !== e.id) fail("This phone belongs to someone else.", "denied");
-    var a = obj("auth/emp-" + e.id);
+    var a = obj("auth/emp-" + e.id), tok;
+    if (req.pin != null) {                    // the 6-digit PIN: for clocking in and out (and confirming hours)
+      if (!a || !a.pinHash) fail("You haven't made a PIN yet. Sign in with your password once to make one.", "nopin");
+      var pt = Number(env.cacheGet("ptry:" + e.id) || 0);
+      if (pt >= 5) fail("Too many wrong PINs. Sign in with your password, or wait 10 minutes.", "locked");
+      if (hashPw(String(req.pin), a.pinSalt) !== a.pinHash) { env.cachePut("ptry:" + e.id, String(pt + 1), 600); fail("That PIN isn't right. Try again.", "badpin"); }
+      env.cacheDel("ptry:" + e.id);
+      tok = env.rand(24);
+      env.cachePut("s:" + tok, JSON.stringify({ emp: e.id, dev: d.id, pin: true }), SESSION_SECONDS);
+      return { tok: tok, emp: e, pin: true, hasPin: true, now: env.now() };
+    }
     var tries = Number(env.cacheGet("try:" + e.id) || 0);
     if (tries >= 8) fail("Too many wrong passwords. Wait 10 minutes and try again.", "locked");
     if (!a || hashPw(String(req.password || ""), a.salt) !== a.hash) { env.cachePut("try:" + e.id, String(tries + 1), 600); fail("That password isn't right. Try again.", "badpw"); }
-    env.cacheDel("try:" + e.id);
-    var tok = env.rand(24);
+    env.cacheDel("try:" + e.id); env.cacheDel("ptry:" + e.id);
+    tok = env.rand(24);
     env.cachePut("s:" + tok, JSON.stringify({ emp: e.id, dev: d.id }), SESSION_SECONDS);
-    return { tok: tok, emp: e, mustChange: !!a.mustChange, now: env.now() };
+    return { tok: tok, emp: e, mustChange: !!a.mustChange, hasPin: !!a.pinHash, now: env.now() };
   };
   A.logout = function (req) { if (req.tok) env.cacheDel("s:" + req.tok); return {}; };
   A.changePassword = function (req) {
-    var u = session(req); var a = obj("auth/emp-" + u.emp.id);
+    var u = session(req); if (u.pin) fail("Sign in with your password to change it.", "denied");
+    var a = obj("auth/emp-" + u.emp.id);
     if (!a.mustChange && hashPw(String(req.old || ""), a.salt) !== a.hash) fail("Your current password isn't right.", "badpw");
     var err = pwProblem(req.password); if (err) fail(err);
-    var salt = env.rand(16); save("auth/emp-" + u.emp.id, { salt: salt, hash: hashPw(req.password, salt), mustChange: false });
+    newPw(u.emp.id, req.password, false);
+    return {};
+  };
+  A.setPin = function (req) {
+    var u = session(req); if (u.pin) fail("Sign in with your password to change your PIN.", "denied");
+    var err = pinProblem(req.pin); if (err) fail(err);
+    setPinFor(u.emp.id, req.pin); env.cacheDel("ptry:" + u.emp.id);
     return {};
   };
   A.resetPassword = function (req) {
     var u = session(req, true); var e = emp(req.emp); if (!e) fail("Not found.");
     var temp = String(req.temp || ""); if (temp.length < 6) fail("The temporary password needs at least 6 characters.");
-    var salt = env.rand(16); save("auth/emp-" + e.id, { salt: salt, hash: hashPw(temp, salt), mustChange: true });
+    newPw(e.id, temp, true); env.cacheDel("try:" + e.id);
     return {};
   };
   A.recover = function (req) {         // a manager who forgot their password uses the recovery code
@@ -661,7 +984,7 @@ function MpcServer(store, env) {
     var code = String(req.code || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
     if (mpcSha256(s.recovery.salt + ":" + code) !== s.recovery.hash) fail("That recovery code isn't right.", "badcode");
     var err = pwProblem(req.password); if (err) fail(err);
-    var salt = env.rand(16); save("auth/emp-" + e.id, { salt: salt, hash: hashPw(req.password, salt), mustChange: false });
+    newPw(e.id, req.password, false);
     return {};
   };
   A.setRecovery = function (req) {
@@ -702,6 +1025,7 @@ function MpcServer(store, env) {
     var u = session(req); var since = Number(req.since || 0); var top = 0;
     var rows = store.all().filter(function (r) { if (r.seq > top) top = r.seq; return r.seq > since && canRead(u, r.path, r.data); }).map(cleanRow).map(function (r) {
       if (!u.admin && /^events\/[^/]+\/_week\//.test(r.path)) { var o = JSON.parse(r.data); delete o.snapshot; r.data = JSON.stringify(o); }   // others' paid hours stay private
+      if (!u.admin && r.path === "settings.json") { var st = JSON.parse(r.data); delete st.payrollEmail; r.data = JSON.stringify(st); }
       return r;
     });
     return { rows: rows, seq: top, me: u.emp, now: env.now() };
@@ -715,11 +1039,66 @@ function MpcServer(store, env) {
     var finalPath = checkWrite(u, path, o, existing, req);
     if (finalPath !== path && store.get(finalPath)) fail("Please try again.", "exists");
     var seq = save(finalPath, o);
+    if (finalPath === "settings.json" && o.payrollEmail && env.ensureTrigger) env.ensureTrigger();
     return { path: finalPath, data: JSON.stringify(o), seq: seq };
   };
   A.backup = function (req) {
     session(req, true);
     return { rows: store.all().filter(function (r) { return !/^(auth|sys)\//.test(r.path); }).map(cleanRow), made: env.now() };
+  };
+
+  /* ---------- the payroll email (Thursday 5 PM, office time) ---------- */
+  function payTools() {
+    var Pay = typeof MpcPay !== "undefined" ? MpcPay : require("./pay_core.js").MpcPay;
+    var Fold = typeof mpcFolders !== "undefined" ? mpcFolders : require("./pay_core.js").mpcFolders;
+    return Pay({ off: env.tzOff, now: env.now, settings: function () { return obj("settings.json") || {}; }, rows: Fold(store.all()) });
+  }
+  function payrollEmail() { var s = obj("settings.json") || {}; var to = String(s.payrollEmail || "").trim(); return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to) ? to : ""; }
+  function sendPayroll(wk, kind) {
+    var to = payrollEmail(); if (!to) fail("Add the email address for payroll sheets in Settings first.", "noemail");
+    var P = payTools(), meta = P.metaFor(wk); if (!meta.locked) fail("Payroll for that week isn't done yet.", "notdone");
+    var data = P.payrollData(meta, wk, employees()), sheet = P.payrollHtml(data, {}), when = P.fmtDate(P.fridayOf(wk));
+    var intro = kind === "auto" ? "Payroll wasn't done in the time clock by 5 PM Thursday, so it was done automatically with each person's usual hours for the days still to come. To change it, unlock the week in Time Cards and do payroll again; the new sheet is emailed right away."
+      : kind === "update" ? "This replaces the payroll sheet sent earlier for this week."
+      : "Here are this week's payroll hours from the Masterpiece Time Clock.";
+    var css = "body{font-family:Arial,Helvetica,sans-serif;color:#111;font-size:13px}h1{font-size:20px;margin:0}.rp-head{border-bottom:2px solid #111;padding-bottom:8px;margin-bottom:10px}.rp-meta{display:block;color:#444;margin-top:6px}.rp-meta span,.rp-meta b{display:block}" +
+      ".rp-t{border-collapse:collapse;width:100%;margin:8px 0}.rp-t th,.rp-t td{border:1px solid #bbb;padding:5px 7px;text-align:left;vertical-align:top}.rp-t th{background:#f0f0f0;font-size:11px;text-transform:uppercase}.num{text-align:right;white-space:nowrap}" +
+      "tfoot td{background:#f6f6f6;font-weight:bold}.rp-sub{font-size:11px;color:#555}.rp-callout{padding:8px 10px;border:1px solid #d9b45a;background:#fdf6e3}.rp-h{font-size:15px;margin:14px 0 4px}";
+    var page = "<!doctype html><html><head><meta charset=\"utf-8\"><style>" + css + "</style></head><body>" + sheet + "</body></html>";
+    env.sendMail({ to: to, subject: "Payroll hours: week ending " + when + (kind === "auto" ? " (done automatically)" : kind === "update" ? " (updated)" : ""),
+      html: "<!doctype html><html><head><meta charset=\"utf-8\"><style>" + css + "</style></head><body><p>" + intro + "</p>" + sheet + "<p style=\"color:#666;font-size:12px\">The spreadsheet and PDF are attached. Sent by the Masterpiece Time Clock.</p></body></html>",
+      csv: { name: "Payroll hours week ending " + P.fridayOf(wk) + ".csv", text: P.payrollCsv(data) },
+      pdf: { name: "Payroll hours week ending " + P.fridayOf(wk) + ".pdf", html: page } });
+    save("sys/emailed-" + wk, { t: env.now(), lock: meta.lock.created, kind: kind, to: to });
+    return { to: to };
+  }
+  function autoPayroll(wk) {   // payroll not done by 5 PM Thursday: do it with the usual estimates, like the page would
+    var P = payTools(), now = env.now(), emps = employees();
+    var people = P.payPeople(wk, emps), estDays = P.estimateDays(wk);
+    var byId = {}; people.forEach(function (w) { byId[w.emp.id] = w; });
+    var snapshot = P.makeSnapshot(people, estDays, function (eid, k) { return P.suggestFor(byId[eid], wk, k); }, P.correctionsAll(wk, emps));
+    save("events/" + wk + "/_week/" + now + "-" + id() + ".json", { created: now, by: "", type: "lock", snapshot: snapshot, early: estDays.length > 0, auto: true });
+    people.forEach(function (w) { if (w.emp.active !== false && snapshot[w.emp.id]) save("notes/" + w.emp.id + "/" + now + "-" + id() + ".json", { t: now, text: P.paidNotice(snapshot[w.emp.id], wk), link: null, read: false }); });
+    emps.filter(function (e) { return e.admin && e.active !== false; }).forEach(function (m) {
+      save("notes/" + m.id + "/" + now + "-" + id() + ".json", { t: now, text: "Payroll for " + P.weekLc(wk) + " wasn't done by 5 PM Thursday, so the time clock did it with the usual estimates and emailed the sheet. To change it, unlock the week and do payroll again.", link: { v: "manage", tab: "cards", wk: wk }, read: false });
+    });
+    save("change log/" + now + "-" + id() + ".json", { t: now, by: "", text: "Payroll for " + P.weekLc(wk) + " was done automatically at 5 PM Thursday" + (estDays.length ? " (" + estDays.map(P.fmtDay).join(", ") + " estimated)" : "") });
+  }
+  function cronThursday() {
+    if (!payrollEmail()) return { skipped: "no payroll email set" };
+    var P = payTools(), wk = P.weekOf(env.now()), auto = false;
+    if (!P.metaFor(wk).locked) { autoPayroll(wk); auto = true; }
+    return sendPayroll(wk, auto ? "auto" : obj("sys/emailed-" + wk) ? "update" : "done");
+  }
+  A.emailPayroll = function (req) {          // after payroll is done or redone past 5 PM Thursday: send it now
+    session(req, true);
+    return sendPayroll(String(req.wk || ""), obj("sys/emailed-" + req.wk) ? "update" : "done");
+  };
+  A.testEmail = function (req) {
+    session(req, true);
+    var to = payrollEmail(); if (!to) fail("Type the email address and save it first.", "noemail");
+    env.sendMail({ to: to, subject: "Masterpiece Time Clock: test email", html: "<p>This is a test from the Masterpiece Time Clock. Payroll sheets will be sent to this address each Thursday at 5 PM (Boise time).</p>" });
+    return { to: to, scheduled: env.ensureTrigger ? !!env.ensureTrigger() : false };
   };
 
   function pwProblem(a) {
@@ -738,6 +1117,7 @@ function MpcServer(store, env) {
       } catch (e) { return { ok: false, error: e.message || String(e), code: e.code || "error" }; }
     },
     weekOf: weekOf,
+    cron: function () { try { return { ok: true, r: cronThursday() }; } catch (e) { return { ok: false, error: e.message || String(e), code: e.code || "error" }; } },
   };
 }
 if (typeof module !== "undefined") module.exports = { MpcServer: MpcServer, mpcSha256: mpcSha256 };
@@ -761,16 +1141,20 @@ function MpcMockServer(ns) {
     cacheGet: function (k) { var c = db.cache[k]; if (!c || c.exp < Date.now()) return null; return c.v; },
     cachePut: function (k, v, sec) { db.cache[k] = { v: v, exp: Date.now() + sec * 1000 }; persist(); },
     cacheDel: function (k) { delete db.cache[k]; persist(); },
+    tzOff: function (t) { return new Date(t).getTimezoneOffset(); },
+    sendMail: function (m) { db.mail = (db.mail || []).concat([{ to: m.to, subject: m.subject, html: m.html, csv: m.csv || null, pdf: !!m.pdf, t: Date.now() }]); persist(); },
+    ensureTrigger: function () { return true; },
   };
   var server = MpcServer(store, env);
   function reload() { try { var x = JSON.parse(localStorage.getItem(KEY) || "null"); if (x) db = x; } catch (e) {} }   // other tabs (other "computers") may have changed it
-  return { call: function (req) { return new Promise(function (res) { setTimeout(function () { reload(); res(JSON.parse(JSON.stringify(server.handle(JSON.parse(JSON.stringify(req)))))); }, 30); }); } };
+  return { cron: function () { reload(); return server.cron(); }, mail: function () { reload(); return db.mail || []; },
+    call: function (req) { return new Promise(function (res) { setTimeout(function () { reload(); res(JSON.parse(JSON.stringify(server.handle(JSON.parse(JSON.stringify(req)))))); }, 30); }); } };
 }
 
 (() => {
 "use strict";
 /* ================================================================ basics */
-const APP_VERSION = "2.1.1";
+const APP_VERSION = "2.2.0";
 const ROOT_NAME = "Masterpiece Time Clock";
 const SEAL_SALT = "mpc-timeclock-seal-v1";
 const OT_LIMIT = 40;                       // hours worked in a week before overtime
@@ -841,14 +1225,18 @@ async function api(a, body = {}) {
   return res.r;
 }
 /* the local copy */
-const Mirror = { rows: new Map(), seq: 0, clear() { this.rows.clear(); this.seq = 0; } };
+const Mirror = { rows: new Map(), seq: 0, v: 0, clear() { this.rows.clear(); this.seq = 0; this.v++; }, set(k, d) { this.rows.set(k, d); this.v++; } };
+/* the hours and payroll math (shared with the server, so the Thursday email matches this page) */
+let folders = { v: -1, f: null };
+const PAY = MpcPay({ off: (t) => new Date(t).getTimezoneOffset(), now: () => Date.now(), settings: () => D.settings,
+  rows: (dir) => { if (folders.v !== Mirror.v) folders = { v: Mirror.v, f: mpcFolders([...Mirror.rows].map(([path, data]) => ({ path, data }))) }; return folders.f(dir); } });
 let syncing = null;
 async function syncNow() {
   if (!S.tok) return;
   if (syncing) return syncing;
   syncing = (async () => {
     const r = await api("sync", { since: Mirror.seq });
-    for (const row of r.rows) Mirror.rows.set(row.path, row.data);
+    for (const row of r.rows) Mirror.set(row.path, row.data);
     Mirror.seq = Math.max(Mirror.seq, r.seq);
     if (r.me && S.emp && r.me.id === S.emp.id) Object.assign(S.emp, r.me);
   })().finally(() => { syncing = null; });
@@ -873,7 +1261,7 @@ async function writeJson(parts, name, obj) {
   const o = Object.assign({}, obj); delete o._seal; delete o.file;
   const path = under(parts) + name;
   const r = await api("put", { path, data: o, mode: Mirror.rows.has(path) ? "update" : "create" });
-  Mirror.rows.set(r.path, r.data);
+  Mirror.set(r.path, r.data);
   return r.path;
 }
 
@@ -890,6 +1278,11 @@ const pwProblem = (a, b) => a.length < 8 ? "The password needs at least 8 charac
   : !/[^A-Za-z0-9]/.test(a) ? "The password needs at least one special character, like ! # $ or ?."
   : a !== b ? "The two passwords don't match." : "";
 const pwHint = '<p class="hint">' + PW_RULES + '</p>';
+/* the 6-digit PIN is only for clocking in and out (and confirming hours) */
+const pinProblem = (a, b) => !/^[0-9]{6}$/.test(a) ? "The PIN needs exactly 6 numbers." : /^(.)\1{5}$/.test(a) ? "Pick a PIN that isn't the same number 6 times."
+  : "0123456789".includes(a) || "9876543210".includes(a) ? "Pick a PIN that isn't a straight run like 123456." : a !== b ? "The two PINs don't match." : "";
+const pinField = (id, label) => '<div class="field"><label for="' + id + '">' + label + '</label><input type="password" id="' + id + '" class="pin-in" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off"></div>';
+const pinHint = '<p class="hint">6 numbers, used to clock in and out. Not the same number six times, and not a run like 123456.</p>';
 
 /* ================================================================ data */
 const D = { settings: null, emps: [] };
@@ -906,11 +1299,7 @@ const active = () => D.emps.filter(e => e.active !== false);
 const admins = () => active().filter(e => e.admin);
 
 /* events: one small file per thing that happens, so the 3 computers never write the same file */
-async function weekEvents(wk, empId) {
-  const parts = ["events", wk, empId]; const out = [];
-  for (const n of await listJson(parts)) { const o = await readJson(parts, n); if (o && !o._broken) out.push(Object.assign({ id: n.replace(/\.json$/, "") }, o)); }
-  return out.sort((a, b) => (a.created - b.created) || a.id.localeCompare(b.id));
-}
+const weekEvents = (wk, empId) => PAY.eventsFor(wk, empId);
 async function addEvent(wk, empId, ev) {
   const created = Date.now(); const name = created + "-" + rnd() + ".json";
   const o = Object.assign({ created, by: S.emp ? S.emp.id : "" }, ev);
@@ -926,13 +1315,7 @@ async function loadLog(limit = 300) {
   for (const n of names) { const o = await readJson(["change log"], n); if (o) out.push(o); }
   return out;
 }
-async function weekMeta(wk) {
-  const parts = ["events", wk, "_week"]; const out = [];
-  for (const n of await listJson(parts)) { const o = await readJson(parts, n); if (o) out.push(o); }
-  out.sort((a, b) => a.created - b.created);
-  const last = [...out].reverse().find(e => e.type === "lock" || e.type === "unlock");
-  return { locked: !!last && last.type === "lock", lock: last && last.type === "lock" ? last : null, history: out };
-}
+const weekMeta = (wk) => PAY.metaFor(wk);
 async function addWeekMeta(wk, ev) {
   const created = Date.now();
   await writeJson(["events", wk, "_week"], created + "-" + rnd() + ".json", Object.assign({ created, by: S.emp ? S.emp.id : "" }, ev));
@@ -960,71 +1343,10 @@ async function balances(emp) {
   return { pto: sum("pto"), sick: sum("sick"), lines: L };
 }
 
-/* ================================================================ the hours math */
-const roundT = (t) => { const m = Number(D.settings && D.settings.round) || 0; return m ? Math.round(t / (m * 60000)) * m * 60000 : t; };
-function holidaysIn(wk) {
-  const days = weekDays(wk).slice(0, 5);
-  return ((D.settings && D.settings.holidays) || []).filter(h => days.includes(h.date));
-}
-/* Works out one person's week from its events. */
-function computeWeek(emp, wk, evs, now = Date.now()) {
-  const live = evs.filter(e => !evs.some(v => v.type === "void" && v.target === e.id));
-  const moves = {}; live.filter(e => e.type === "move").forEach(e => { moves[e.target] = e.at; });
-  const keys = weekDays(wk);
-  const days = keys.map(k => ({ key: k, pairs: [], minutes: 0, entries: [], issues: [], est: null, worked: 0 }));
-  const dayOf = (t) => days.find(d => d.key === dayKey(t)) || null;
-  const issues = [];
-  const punches = live.filter(e => e.type === "punch").map(e => ({ id: e.id, dir: e.dir, at: moves[e.id] != null ? moves[e.id] : e.at, how: e.how, by: e.by, moved: moves[e.id] != null }))
-    .sort((a, b) => a.at - b.at);
-  let open = null, liveMin = 0, clockedIn = null;
-  const addPair = (i, o) => {
-    const d = dayOf(i ? i.at : o.at); if (!d) return;
-    const p = { in: i, out: o };
-    if (i && o) { p.min = Math.max(0, (roundT(o.at) - roundT(i.at)) / 60000); d.minutes += p.min; }
-    d.pairs.push(p); return p;
-  };
-  for (const p of punches) {
-    if (p.dir === "in") {
-      if (open) { const x = addPair(open, null); if (x) { x.bad = "No clock-out"; dayOf(open.at).issues.push("Clocked in at " + fmtTime(open.at) + " without clocking out"); } }
-      open = p;
-    } else {
-      if (open) { addPair(open, p); open = null; }
-      else { const x = addPair(null, p); if (x) { x.bad = "No clock-in"; const d = dayOf(p.at); if (d) d.issues.push("Clocked out at " + fmtTime(p.at) + " without clocking in"); } }
-    }
-  }
-  if (open) {
-    const x = addPair(open, null);
-    if (x && dayKey(open.at) === dayKey(now) && now - open.at < 18 * 3600000) { x.live = true; clockedIn = open; liveMin = Math.max(0, (now - roundT(open.at)) / 60000); }
-    else if (x) { x.bad = "No clock-out"; const d = dayOf(open.at); if (d) d.issues.push("Missed clock-out after " + fmtTime(open.at)); }
-  }
-  // hours added by the manager or approved requests
-  for (const e of live.filter(e => e.type === "hours")) { const d = days.find(x => x.key === e.date); if (d) d.entries.push({ id: e.id, cat: e.cat, hours: Number(e.hours) || 0, note: e.note || "", by: e.by }); }
-  // company holidays (Monday to Friday) count automatically unless taken off for this person
-  for (const h of holidaysIn(wk)) {
-    if (emp.created && h.date < dayKey(emp.created)) continue;   // not before they were added
-    const d = days.find(x => x.key === h.date);
-    const off = live.some(e => e.type === "holiday_off" && e.date === h.date);
-    if (d && !off && !d.entries.some(x => x.cat === "holiday")) d.entries.push({ id: null, cat: "holiday", hours: Number(h.hours) || 0, note: h.name, auto: true });
-  }
-  const T = { worked: 0, pto: 0, sick: 0, holiday: 0 };
-  for (const d of days) {
-    d.worked = d.minutes / 60 + d.entries.filter(x => x.cat === "worked").reduce((s, x) => s + x.hours, 0);
-    T.worked += d.worked;
-    for (const c of ["pto", "sick", "holiday"]) T[c] += d.entries.filter(x => x.cat === c).reduce((s, x) => s + x.hours, 0);
-    if (d.issues.length) issues.push(...d.issues.map(t => fmtDay(d.key) + ": " + t));
-  }
-  const worked = r2(T.worked), reg = r2(Math.min(worked, OT_LIMIT)), ot = r2(Math.max(0, worked - OT_LIMIT));
-  const otEv = [...live].reverse().find(e => e.type === "ot");
-  const otApproved = otEv ? Number(otEv.hours) : null;
-  const otStatus = ot <= 0 ? "none" : otApproved == null ? "pending" : Math.abs(otApproved - ot) < 0.01 ? "approved" : "changed";
-  const sign = [...live].reverse().find(e => e.type === "signoff");
-  const changedAfterSign = sign ? live.some(e => e.created > sign.created && e.type !== "signoff") : false;
-  const total = r2(reg + ot + T.pto + T.sick + T.holiday);
-  return { emp, wk, days, punches, clockedIn, liveMin, issues, worked, reg, ot, otApproved, otStatus, pto: r2(T.pto), sick: r2(T.sick), holiday: r2(T.holiday),
-    total, signed: sign || null, changedAfterSign };
-}
-async function weekFor(emp, wk) { return computeWeek(emp, wk, await weekEvents(wk, emp.id)); }
-const snapOf = (w) => ({ reg: w.reg, ot: w.ot, pto: w.pto, sick: w.sick, holiday: w.holiday, total: w.total });
+/* ================================================================ the hours math (in pay_core.js) */
+const computeWeek = (emp, wk, evs, now) => PAY.computeWeek(emp, wk, evs, now);
+const weekFor = (emp, wk) => PAY.weekFor(emp, wk);
+const snapOf = PAY.snapOf;
 
 /* ================================================================ notifications (the bell) */
 /* Two kinds: messages (saved, like "your time off was approved") and to-dos (worked out live, like an
@@ -1044,7 +1366,7 @@ async function readTodoKeys(empId) { const o = await readJson(["notes", empId], 
 async function saveTodoKeys(empId, set) { await writeJson(["notes", empId], "read-todos.json", { keys: [...set].slice(-300) }); }
 async function computeTodos(emp) {
   const out = []; const now = new Date(); const thisWk = weekOf(now);
-  if (emp.admin) {
+  if (emp.admin && !S.pin) {
     try { const dv = await api("devices"); for (const d of dv.devices.filter(x => x.status === "pending")) out.push({ key: "dev:" + d.id, t: d.created, text: "A new computer wants to use the time clock (" + d.label + "). Allow it only if it's an office computer.", link: { v: "manage", tab: "team" } }); } catch (_) {}
     const reqs = (await loadRequests()).filter(r => r.status === "pending" && D.emps.some(e => e.id === r.emp));
     for (const r of reqs) out.push({ key: "req:" + r.id, t: r.created, text: nameOf(r.emp) + " is asking for " + (r.kind === "fix" ? "a missed punch fix, " + fmtDay(r.date) : (CATS[r.kind] || r.kind) + ", " + (r.dates || [r.date]).map(fmtDay).join(", ")) + ". Approve or decline it.", link: { v: "manage", tab: "cards" } });
@@ -1073,8 +1395,11 @@ async function computeTodos(emp) {
     for (const n of [0, -1]) {
       const wk = shiftWeek(thisWk, n); const w = await weekFor(emp, wk); const meta = await weekMeta(wk);
       if (w.issues.length) out.push({ key: "mymiss:" + wk + ":" + w.issues.length, t: Date.now() - 2, text: "You have a missed punch: " + w.issues[0] + ". Send a fix request.", link: { v: "me", wk } });
-      const due = n < 0 || now.getDay() === 5 && now.getHours() >= 12;
-      if (due && (!meta.locked || paidEarly(meta, wk)) && w.total > 0 && !(w.signed && !w.changedAfterSign)) out.push({ key: "confirm:" + wk, t: fromKey(fridayOf(wk)).getTime(), text: "Please check and confirm your hours for " + weekLc(wk) + ".", link: { v: "me", wk } });
+      if (!((!meta.locked || paidEarly(meta, wk)) && w.total > 0 && !(w.signed && !w.changedAfterSign))) continue;
+      const day = now.getDay(), today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      if (n < 0) out.push({ key: "confirm:" + wk, t: fromKey(fridayOf(wk)).getTime(), text: "Please check and confirm your hours for " + weekLc(wk) + ".", link: { v: "me", wk } });
+      else if (day === 4) out.push({ key: "confirm:" + wk + ":thu", t: today0, text: "Payroll is done today at 5 PM. Please check and confirm your hours so far this week.", link: { v: "me", wk } });
+      else if (day === 5 || day === 6 || day === 0) out.push({ key: "confirm:" + wk + ":fri", t: today0, text: "Please check and confirm your hours for this week.", link: { v: "me", wk } });
     }
   }
   return out;
@@ -1131,16 +1456,16 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#bel
 setInterval(() => { if (S.emp && !dlg.open && !document.hidden) syncNow().then(refreshBell).catch(() => {}); }, 30000);
 
 /* ================================================================ session (shared office computers) */
-const S = { emp: null, tok: null, last: Date.now() };
+const S = { emp: null, tok: null, pin: false, last: Date.now() };
 const touch = () => { S.last = Date.now(); };
 ["pointerdown", "keydown"].forEach(t => document.addEventListener(t, touch, true));
 setInterval(() => {
   if (!S.emp) return;
-  const limit = (S.emp.admin ? IDLE_ADMIN : IDLE_EMP) * 1000;
-  if (Date.now() - S.last > limit && !$("#dlg").open) { signOut(); toast("Signed out after a few minutes of no activity."); }
+  const limit = (S.emp.admin && !S.pin ? IDLE_ADMIN : IDLE_EMP) * 1000 * ($("#dlg").open ? 2 : 1);
+  if (Date.now() - S.last > limit) { signOut(); toast("Signed out after a few minutes of no activity."); }
 }, 5000);
 function signIn(emp) { S.emp = emp; touch(); paintBar(); refreshBell().catch(() => {}); }
-function signOut() { const t = S.tok; S.emp = null; S.tok = null; Mirror.clear(); paintBar(); if (t) api("logout", { tok: t }).catch(() => {}); go("home"); }
+function signOut() { const t = S.tok; S.emp = null; S.tok = null; S.pin = false; Mirror.clear(); paintBar(); if (t) api("logout", { tok: t }).catch(() => {}); go("home"); }
 function paintBar() {
   const w = $("#who"), o = $("#sign-out");
   w.hidden = o.hidden = !S.emp;
@@ -1149,7 +1474,7 @@ function paintBar() {
 }
 /* managers get one simple menu: My Time · Time Cards · Team · Reports · Settings */
 function navBar(on) {
-  if (!S.emp || !S.emp.admin) return "";
+  if (!S.emp || !S.emp.admin || S.pin) return "";
   const T = (S.emp.hourly !== false ? [["me", "My Time"]] : []).concat([["cards", "Time Cards"], ["team", "Team"], ["reports", "Reports"], ["settings", "Settings"]]);
   return '<div class="tabs no-print" role="tablist">' + T.map(([k, l]) => '<button class="tab' + (k === on ? " on" : "") + '" type="button" data-nav="' + k + '">' + l + '</button>').join("") + '</div>';
 }
@@ -1225,7 +1550,8 @@ function viewPending() {
 function viewOwner() {
   centerCard('<div class="card-head"><span class="section-title">Owner setup</span><h2>Connect the private server</h2>' +
     '<p class="muted">Do this once, after following the setup steps. It makes the manager\'s link.</p></div>' +
-    '<div class="field"><label>1. The server code</label><div class="row"><button class="btn btn-secondary" type="button" id="copycode">Copy the server code</button><a class="btn btn-text" href="Code.gs.txt" target="_blank" rel="noopener">Open it instead</a></div></div>' +
+    '<div class="field"><label>1. The server code</label><div class="row"><button class="btn btn-secondary" type="button" id="copycode">Copy the server code</button><a class="btn btn-text" href="Code.gs.txt" target="_blank" rel="noopener">Open it instead</a></div>' +
+    '<p class="hint">When Google asks for permission, allow all of it: the spreadsheet holds the records, and sending email and running on a schedule are for the Thursday 5 PM payroll email.</p></div>' +
     '<div class="field"><label for="surl">2. Paste the Web app address from Google (it ends in /exec)</label><input type="text" id="surl" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></div>' +
     '<p class="err" id="serr"></p><button class="btn btn-primary btn-lg btn-block" type="button" id="sgo">Connect</button>');
   $("#copycode").addEventListener("click", async () => {
@@ -1258,6 +1584,7 @@ async function viewJoin(code) {
   try { r = await api("register", { code, label: deviceLabel() }); }
   catch (e) { return viewNotConnected(e.message); }
   if (r.device) { Conn.dev = r.device; saveConn(); }
+  if (r.invite && r.invite.phone) { Conn.phone = true; saveConn(); }
   const inv = r.invite;
   if (inv.used || inv.role === "device") return r.status === "allowed" ? enterApp() : viewPending();
   if (inv.role === "manager") return viewCreateManager(code);
@@ -1268,14 +1595,15 @@ async function viewJoin(code) {
     '<div class="field"><label for="n-pos">Position</label><input type="text" id="n-pos" autocomplete="off"></div>' +
     '<div class="grid2"><div class="field"><label for="n-pw">Password</label><input type="password" id="n-pw" autocomplete="new-password"></div>' +
     '<div class="field"><label for="n-pw2">Type it again</label><input type="password" id="n-pw2" autocomplete="new-password"></div></div>' + pwHint +
+    '<div class="grid2">' + pinField("n-pin", "6-digit PIN") + pinField("n-pin2", "Type it again") + '</div>' + pinHint +
     '<p class="err" id="n-err"></p><button class="btn btn-primary btn-lg btn-block" type="button" id="n-go">Make my account</button>');
   $("#n-go").addEventListener("click", async () => {
     const first = $("#n-first").value.trim(), last = $("#n-last").value.trim(), position = $("#n-pos").value.trim();
-    const err = !first || !last ? "Type your first and last name." : !position ? "Type your position." : pwProblem($("#n-pw").value, $("#n-pw2").value);
+    const err = !first || !last ? "Type your first and last name." : !position ? "Type your position." : pwProblem($("#n-pw").value, $("#n-pw2").value) || pinProblem($("#n-pin").value, $("#n-pin2").value);
     if (err) { $("#n-err").textContent = err; return; }
     const btn = $("#n-go"); btn.disabled = true;
     try {
-      const made = await api("createAccount", { code, first, last, position, password: $("#n-pw").value });
+      const made = await api("createAccount", { code, first, last, position, password: $("#n-pw").value, pin: $("#n-pin").value });
       const h = await api("hello");
       if (h.device.status !== "allowed") { toast("Your account is ready."); return viewPending(); }
       await signInWith(made.emp.id, $("#n-pw").value);
@@ -1328,6 +1656,7 @@ function viewCreateManager(code) {
     '<label class="check"><input type="checkbox" id="m-hourly" checked><span><b>I\'m hourly too</b><span class="hint">Show me on the time clock so I can clock in and out.</span></span></label>' +
     '<div class="grid2"><div class="field"><label for="m-pw">Password</label><input type="password" id="m-pw" autocomplete="new-password"></div>' +
     '<div class="field"><label for="m-pw2">Type it again</label><input type="password" id="m-pw2" autocomplete="new-password"></div></div>' + pwHint +
+    '<div class="grid2">' + pinField("m-pin", "6-digit PIN") + pinField("m-pin2", "Type it again") + '</div>' + pinHint +
     '<div class="sep"></div>' +
     '<div class="card-head"><h3>Paid holidays for ' + y + '</h3><p class="muted">Holidays add hours to everyone\'s time card automatically. Uncheck any the company doesn\'t give. You can change these anytime in Settings.</p></div>' +
     '<div class="field" style="max-width:220px"><label for="m-holh">Hours for each holiday</label><input type="number" id="m-holh" value="8" min="0" max="24" step="0.25"></div>' +
@@ -1337,12 +1666,12 @@ function viewCreateManager(code) {
   $("#m-go").addEventListener("click", async () => {
     const first = $("#m-first").value.trim(), last = $("#m-last").value.trim(), pos = $("#m-pos").value.trim();
     const pw = $("#m-pw").value, pw2 = $("#m-pw2").value;
-    const err = !first || !last ? "Type your first and last name." : pwProblem(pw, pw2);
+    const err = !first || !last ? "Type your first and last name." : pwProblem(pw, pw2) || pinProblem($("#m-pin").value, $("#m-pin2").value);
     if (err) { $("#m-err").textContent = err; return; }
     const btn = $("#m-go"); btn.disabled = true;
     try {
       const rc = newCode();
-      const made = await api("createAccount", { code, first, last, position: pos || "Office Manager", hourly: $("#m-hourly").checked, password: pw, recovery: rc,
+      const made = await api("createAccount", { code, first, last, position: pos || "Office Manager", hourly: $("#m-hourly").checked, password: pw, pin: $("#m-pin").value, recovery: rc,
         settings: { holidays: readChecklist($(".hol-list"), Number($("#m-holh").value) || 8) } });
       await signInWith(made.emp.id, pw);
       await logChange("Set up the time clock");
@@ -1359,6 +1688,7 @@ async function enterApp() {
   let h;
   try { h = await api("hello"); } catch (e) { return viewNotConnected(e.message); }
   if (!h.device) { delete Conn.dev; saveConn(); return viewNotConnected(); }
+  D.serverVersion = h.version || 1;
   if (h.device.status === "pending") return viewPending();
   if (h.device.status === "denied") return viewNotConnected("The manager didn't allow this computer. If that's a mistake, ask them to allow it in Team.");
   go("home");
@@ -1372,9 +1702,10 @@ async function viewHome() {
     try { b = await api("board"); } catch (e) { if (e.code === "pending") return viewPending(); if (e.code === "nodevice") return viewNotConnected(); throw e; }
     if (current.name !== "home") return;
     D.board = b.people;
+    if (!!b.device.phone !== !!Conn.phone) { Conn.phone = !!b.device.phone; saveConn(); }
     if (b.device.phone && b.people.length === 1) return go("signin", { id: b.people[0].id, phone: true });
     const now = new Date();
-    view().innerHTML = '<div class="now"><div class="now-time" id="now-time">' + fmtTime(now) + '</div><div class="now-date">' + esc(fmtLong(dayKey(now))) + '</div></div>' +
+    view().innerHTML = (D.serverVersion && D.serverVersion < 2 ? '<div class="note warn" style="margin-bottom:14px"><b>The time clock server needs its update</b><span>PIN sign-in and the Thursday payroll email won\'t work until the owner pastes the new server code into Apps Script and deploys a new version (Deploy → Manage deployments → Edit → New version).</span></div>' : "") + '<div class="now"><div class="now-time" id="now-time">' + fmtTime(now) + '</div><div class="now-date">' + esc(fmtLong(dayKey(now))) + '</div></div>' +
       (b.people.length ? '<div class="card-head" style="text-align:center"><h3>Tap your name to clock in or out</h3></div>' : '<div class="empty"><b>No one here yet</b><span class="muted">The manager invites employees from Team.</span></div>') +
       '<div class="tiles">' + b.people.map(e => {
         const chip = !e.hourly ? '<span class="chip out">Manager</span>' : e.inSince ? '<span class="chip in">In since ' + fmtTime(e.inSince) + '</span>' : '<span class="chip out">Out</span>';
@@ -1391,34 +1722,52 @@ async function viewHome() {
 }
 
 /* ================================================================ sign in */
-async function signInWith(empId, password) {
-  const r = await api("login", { emp: empId, password });
-  S.tok = r.tok; Mirror.clear();
+async function signInWith(empId, password, pin) {
+  const r = await api("login", pin != null ? { emp: empId, pin } : { emp: empId, password });
+  S.tok = r.tok; S.pin = !!r.pin; Mirror.clear();
   signIn(r.emp);
   await syncNow(); await loadSettings(); await loadEmps();
   return r;
 }
-async function viewSignIn({ id, phone }) {
+/* tapping your name: the 6-digit PIN for clocking in and out; the password for everything else */
+async function viewSignIn({ id, phone, pw, why }) {
   const emp = (D.board || []).find(e => e.id === id); if (!emp) return go("home");
-  centerCard((phone ? "" : backBtn("Not you?")) +
+  const usePin = emp.hasPin && emp.hourly !== false && !pw;
+  centerCard((phone && !pw ? "" : backBtn(phone ? "Back" : "Not you?")) +
     '<div class="who-big"><span class="avatar">' + esc(initials(emp)) + '</span><div><h2>' + esc(fullName(emp)) + '</h2><p class="muted">' + esc(emp.position || "") + '</p></div></div>' +
-    '<div class="field"><label for="pw">Password</label><input type="password" id="pw" autocomplete="current-password"></div>' +
-    '<p class="err" id="err"></p>' +
-    '<button class="btn btn-primary btn-lg btn-block" type="button" id="go">Sign in</button>' +
-    '<button class="btn btn-text" type="button" id="forgot">Forgot your password?</button>');
-  if ($("#back")) $("#back").addEventListener("click", () => go("home", { auto: false }));
-  $("#pw").focus();
+    (why ? '<div class="note"><span>' + esc(why) + '</span></div>' : "") +
+    (usePin
+      ? pinField("pin", "Your 6-digit PIN") + '<p class="err" id="err"></p>' +
+        '<button class="btn btn-primary btn-lg btn-block" type="button" id="go">Continue</button>' +
+        '<button class="btn btn-text" type="button" id="usepw">Use my password instead</button>' +
+        '<p class="hint" style="text-align:center">Use your password to ask for time off, fix a missed punch or change your PIN' + (emp.admin ? ", and for the manager pages" : "") + '.</p>'
+      : '<div class="field"><label for="pw">Password</label><input type="password" id="pw" autocomplete="current-password"></div>' +
+        (emp.hourly !== false && !emp.hasPin ? '<p class="hint">After you sign in, you\'ll make a 6-digit PIN so clocking in and out is quicker.</p>' : "") +
+        '<p class="err" id="err"></p>' +
+        '<button class="btn btn-primary btn-lg btn-block" type="button" id="go">Sign in</button>' +
+        '<button class="btn btn-text" type="button" id="forgot">Forgot your password?</button>' +
+        (emp.hasPin && emp.hourly !== false ? '<button class="btn btn-text" type="button" id="usepin">Use my PIN instead</button>' : ""))
+  );
+  if ($("#back")) $("#back").addEventListener("click", () => phone ? go("signin", { id, phone }) : go("home", { auto: false }));
+  const box = usePin ? $("#pin") : $("#pw"); box.focus();
+  let busy = false;
   const tryIt = async () => {
+    if (busy) return; busy = true;
     const btn = $("#go"); btn.disabled = true; $("#err").textContent = "";
     try {
-      const r = await signInWith(emp.id, $("#pw").value);
+      if (usePin) { await signInWith(emp.id, null, box.value); go("me"); return; }
+      const r = await signInWith(emp.id, box.value);
       if (r.mustChange) await changePassword(true);
+      if (!r.hasPin && S.emp.hourly !== false) await makePin(true);
       go(S.emp.hourly === false ? "manage" : "me", { tab: "cards" });
-    } catch (e) { btn.disabled = false; $("#err").textContent = e.message; $("#pw").select(); }
+    } catch (e) { busy = false; btn.disabled = false; $("#err").textContent = e.message; if (usePin) box.value = ""; else box.select(); box.focus(); }
   };
   $("#go").addEventListener("click", tryIt);
-  $("#pw").addEventListener("keydown", (e) => { if (e.key === "Enter") tryIt(); });
-  $("#forgot").addEventListener("click", async () => {
+  box.addEventListener("keydown", (e) => { if (e.key === "Enter") tryIt(); });
+  if (usePin) box.addEventListener("input", () => { box.value = box.value.replace(/[^0-9]/g, "").slice(0, 6); if (box.value.length === 6) tryIt(); });
+  if ($("#usepw")) $("#usepw").addEventListener("click", () => go("signin", { id, phone, pw: true }));
+  if ($("#usepin")) $("#usepin").addEventListener("click", () => go("signin", { id, phone }));
+  if ($("#forgot")) $("#forgot").addEventListener("click", async () => {
     if (!emp.admin) return alertBox("Forgot your password?", "Your manager can reset it for you in Team. You'll pick a new password the next time you sign in.");
     const v = await ask({ title: "Reset with the recovery code", html: '<p class="muted">Type the recovery code you wrote down at setup, then choose a new password. (Another manager can also reset it for you in Team.)</p>' +
       '<div class="field"><label for="rc">Recovery code</label><input type="text" id="rc" autocomplete="off" placeholder="XXXX-XXXX-XXXX"></div>' +
@@ -1429,6 +1778,19 @@ async function viewSignIn({ id, phone }) {
       } }] });
     if (v) toast("Password reset. Sign in with the new one.");
   });
+}
+/* from a PIN sign-in to the password (for requests and settings) */
+function needPassword(why) {
+  const id = S.emp.id, t = S.tok; S.emp = null; S.tok = null; S.pin = false; Mirror.clear(); paintBar(); if (t) api("logout", { tok: t }).catch(() => {});
+  go("signin", { id, phone: !!Conn.phone, pw: true, why });
+}
+async function makePin(forced) {
+  return ask({ title: forced ? "Make your 6-digit PIN" : "Change your PIN", html: (forced ? '<p class="muted">You\'ll use it to clock in and out, instead of typing your password each time. Keep it to yourself.</p>' : "") +
+    '<div class="grid2">' + pinField("np", "New PIN") + pinField("np2", "Type it again") + '</div>' + pinHint + '<p class="err" id="perr"></p>',
+    buttons: [{ label: forced ? "Later" : "Cancel", value: false }, { label: "Save PIN", value: true, kind: "btn-primary", check: async () => {
+      const p = pinProblem($("#np").value, $("#np2").value); if (p) { $("#perr").textContent = p; return false; }
+      try { await api("setPin", { pin: $("#np").value }); return true; } catch (e) { $("#perr").textContent = e.message; return false; }
+    } }] }).then(v => { if (v) toast("PIN saved. Use it next time you clock in or out."); return v; });
 }
 async function changePassword(forced) {
   return ask({ title: forced ? "Choose a new password" : "Change your password", html: (forced ? '<p class="muted">Your password was reset. Choose a new one that only you know.</p>' : "") +
@@ -1447,8 +1809,8 @@ function weekTable(w, { admin = false } = {}) {
     if (wkend && !d.pairs.length && !d.entries.length && !admin) return "";
     const pairs = d.pairs.map(p => {
       const a = p.in ? fmtTime(p.in.at) : "—", b = p.out ? fmtTime(p.out.at) : p.live ? "now" : "—";
-      const ed = "";
       const how = (p.in && p.in.how !== "clock") || (p.out && p.out.how !== "clock") ? ' <span class="tag" title="Entered by hand or from a request, not with the clock button">added</span>' : "";
+      const ed = admin ? locBit(p.in) + locBit(p.out) : "";
       return '<span class="pair' + (p.live ? " open" : p.bad ? " bad" : "") + '">' + a + ' – ' + b + (p.bad ? " (" + esc(p.bad) + ")" : "") + '</span>' + how + ed;
     }).join("");
     const ents = d.entries.map(x => catTag(x.cat, hrs(x.hours) + " h") + (x.note ? ' <span class="hint">' + esc(x.note) + '</span>' : "") +
@@ -1459,6 +1821,14 @@ function weekTable(w, { admin = false } = {}) {
   }).join("");
   return '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Day</th><th>Time in – time out</th><th class="num">Hours worked</th>' + (admin ? '<th class="no-print"></th>' : "") + '</tr></thead><tbody>' + rows +
     '</tbody><tfoot><tr><td>Total</td><td></td><td class="num">' + hrs(w.worked) + '</td>' + (admin ? '<td class="no-print"></td>' : "") + '</tr></tfoot></table></div>';
+}
+/* for the manager: where a phone punch happened (a link to the map), or that the phone didn't share it */
+function locBit(pt) {
+  if (!pt || !pt.phone) return "";
+  const lbl = pt.dir === "in" ? "in" : "out";
+  if (pt.loc && pt.loc.lat != null) return ' <a class="loc" href="https://maps.google.com/?q=' + pt.loc.lat + "," + pt.loc.lng + '" target="_blank" rel="noopener" title="Where the phone was when clocking ' + lbl + ' (within about ' + (pt.loc.acc || "?") + ' m)">📍 ' + lbl + ' location</a>';
+  const why = { denied: "location turned off for this site", timeout: "the phone took too long", unavailable: "the phone couldn't tell", unsupported: "the phone can't share it" }[(pt.loc && pt.loc.err) || ""] || "not shared";
+  return ' <span class="tag warn" title="Clocked ' + lbl + ' on a phone, but no location: ' + esc(why) + '">no ' + lbl + ' location</span>';
 }
 function statsBlock(w, bal) {
   const s = (l, v, hi, em) => '<div class="stat' + (hi ? " hi" : "") + '"><span>' + l + '</span><b>' + v + '</b>' + (em || "") + '</div>';
@@ -1480,12 +1850,16 @@ async function viewMe(opts = {}) {
   const isIn = cur && !!w.clockedIn;
   const now = new Date();
   const open = !meta.locked || paidEarly(meta, wk);
-  const canConfirm = open && w.total > 0 && (wk < thisWk || now.getDay() === 5 || now.getDay() === 6 || now.getDay() === 0);
+  const canConfirm = open && w.total > 0 && (wk < thisWk || [4, 5, 6, 0].includes(now.getDay()));
   const confirmed = w.signed && !w.changedAfterSign;
+  const pinMode = !!S.pin;
+  const due = cur && canConfirm && !confirmed;
   view().innerHTML = navBar("me") +
     (cur ? '<div class="card clock-card"><div><h2>Hi, ' + esc(emp.first) + '</h2><p class="state">' +
       (isIn ? 'You\'re <b>clocked in</b> since ' + fmtTime(w.clockedIn.at) + '.' : 'You\'re <b>clocked out</b>.') + '</p></div>' +
-      '<button class="bigbtn ' + (isIn ? "out" : "in") + '" type="button" id="punch">' + (isIn ? "Clock out" : "Clock in") + '</button></div>' : "") +
+      '<button class="bigbtn ' + (isIn ? "out" : "in") + '" type="button" id="punch">' + (isIn ? "Clock out" : "Clock in") + '</button>' +
+      (Conn.phone ? '<p class="hint" style="flex-basis:100%">Your location is saved each time you clock in or out on this phone.</p>' : "") + '</div>' : "") +
+    (due ? '<div class="note warn"><b>Please confirm your hours</b><span>' + (now.getDay() === 4 ? "Payroll is done today at 5 PM. Check your hours so far this week, then confirm them." : "Check this week's hours, then confirm them.") + '</span><div class="row" style="margin-top:8px"><button class="btn btn-primary mini" type="button" id="confirm-top">Confirm my hours</button></div></div>' : "") +
     (w.issues.length ? '<div class="note warn"><b>Missed punch</b><span>' + w.issues.map(esc).join("<br>") + '</span><div class="row" style="margin-top:8px"><button class="btn btn-primary mini" type="button" id="fix-now">Fix it</button></div></div>' : "") +
     '<div class="card"><div class="wk-nav"><button class="navbtn" id="prev" aria-label="Previous week">‹</button><div><div class="lbl">' + esc(weekLabel(wk)) + '</div><div class="sub">' + esc(weekRange(wk)) + (meta.locked ? (open ? " · Sent to payroll" : " · Paid") : "") + '</div></div>' +
     '<button class="navbtn" id="next" aria-label="Next week"' + (cur ? " disabled" : "") + '>›</button></div>' +
@@ -1493,33 +1867,63 @@ async function viewMe(opts = {}) {
     '<div class="row no-print">' + (open ? '<button class="btn btn-secondary" type="button" id="ask">Request time off or a fix</button>' : "") +
     (confirmed ? '<span class="tag ok">You confirmed these hours</span>' : canConfirm ? '<button class="btn btn-primary" type="button" id="confirm">Confirm my hours</button>' : "") + '</div></div>' +
     (mine.length ? '<div class="card"><div class="card-head"><h3>My requests</h3></div><div class="list">' + mine.map(reqRow).join("") + '</div></div>' : "") +
-    '<div class="row no-print"><button class="btn btn-text" type="button" id="chpw">Change my password</button></div>';
+    (pinMode ? "" : '<div class="row no-print"><button class="btn btn-text" type="button" id="chpw">Change my password</button><button class="btn btn-text" type="button" id="chpin">Change my PIN</button></div>');
   wireNav();
   if ($("#punch")) $("#punch").addEventListener("click", async (e) => {
     const b = e.currentTarget; b.disabled = true;
     try {
-      const t = Date.now(); const dir = isIn ? "out" : "in";
-      await addEvent(weekOf(t), emp.id, { type: "punch", dir, at: t, how: "clock" });
-      const over = dir === "out" && (await weekFor(emp, weekOf(t))).ot > 0;
-      toast((dir === "in" ? "Clocked in at " : "Clocked out at ") + fmtTime(t) + "." + (over ? " You're over 40 hours this week, so the overtime goes to the manager to approve." : "") + (emp.admin ? "" : " Signing you out…"), over ? 6000 : 3500);
-      if (!emp.admin) setTimeout(() => { if (S.emp && S.emp.id === emp.id && current.name === "me") signOut(); }, over ? 5000 : 2500);
+      const dir = isIn ? "out" : "in";
+      const ev = { type: "punch", dir, at: Date.now(), how: "clock" };
+      if (Conn.phone) { b.textContent = "Getting your location…"; ev.loc = await getLoc(); }   // logged only; never stops the punch
+      const id = await addEvent(weekOf(Date.now()), emp.id, ev);
+      const wNow = await weekFor(emp, weekOf(Date.now()));
+      const p = wNow.punches.find(x => x.id === id), t = p ? p.at : Date.now();
+      const over = dir === "out" && wNow.ot > 0, leave = !emp.admin || S.pin;
+      const day = new Date().getDay();
+      const ask2 = dir === "out" && (day === 4 || day === 5) && wNow.total > 0 && !(wNow.signed && !wNow.changedAfterSign);
+      toast((dir === "in" ? "Clocked in at " : "Clocked out at ") + fmtTime(t) + "." + (over ? " You're over 40 hours this week, so the overtime goes to the manager to approve." : "") + (leave && !ask2 ? " Signing you out…" : ""), over ? 6000 : 3500);
+      if (ask2) { await confirmHours(wNow, true); if (leave) return signOut(); return go("me"); }
+      if (leave) setTimeout(() => { if (S.emp && S.emp.id === emp.id && current.name === "me") signOut(); }, over ? 5000 : 2500);
       go("me");
-    } catch (err) { b.disabled = false; showError(err); }
+    } catch (err) { b.disabled = false; b.textContent = isIn ? "Clock out" : "Clock in"; showError(err); }
   });
   $("#prev").addEventListener("click", () => go("me", { wk: shiftWeek(wk, -1) }));
   $("#next").addEventListener("click", () => go("me", { wk: shiftWeek(wk, 1) }));
-  if ($("#fix-now")) $("#fix-now").addEventListener("click", () => requestFix(emp, wk));
+  if ($("#fix-now")) $("#fix-now").addEventListener("click", () => pinMode ? needPassword("To fix a missed punch, sign in with your password.") : requestFix(emp, wk));
   if ($("#ask")) $("#ask").addEventListener("click", async () => {
+    if (pinMode) return needPassword("To ask for time off or fix a punch, sign in with your password.");
     const v = await ask({ title: "What do you need?", html: '<div class="list"><button class="choice" type="button" data-c="off"><b>Time off or sick leave</b><span class="hint">Ask for PTO or sick hours on certain days.</span></button>' +
       '<button class="choice" type="button" data-c="fix"><b>Fix a missed punch</b><span class="hint">Forgot to clock in or out? Send the right time.</span></button></div>', buttons: [{ label: "Cancel", value: null }],
       onOpen: (done) => $$("[data-c]", dlg).forEach(b => b.addEventListener("click", () => done(b.dataset.c))) });
     if (v === "off") requestTimeOff(emp, wk); else if (v === "fix") requestFix(emp, wk);
   });
-  if ($("#confirm")) $("#confirm").addEventListener("click", async () => {
-    const v = await ask({ title: "Confirm your hours", text: "By confirming, you agree the hours shown for " + weekLc(wk) + " are correct: " + hrs(w.worked) + " hours worked" + (w.pto + w.sick + w.holiday ? ", plus " + hrs(w.pto + w.sick + w.holiday) + " hours of PTO, sick or holiday" : "") + ".", buttons: [{ label: "Cancel", value: false }, { label: "Confirm", value: true, kind: "btn-primary" }] });
-    if (v) { await addEvent(wk, emp.id, { type: "signoff" }); await notifyManagers(fullName(emp) + " confirmed their hours for " + weekLc(wk) + ": " + hrs(w.total) + " h.", { v: "empweek", id: emp.id, wk }, emp.id); toast("Thanks, your hours are confirmed."); go("me", { wk }); }
+  for (const id of ["#confirm", "#confirm-top"]) if ($(id)) $(id).addEventListener("click", async () => { if (await confirmHours(w, false)) go("me", { wk }); });
+  if ($("#chpw")) $("#chpw").addEventListener("click", () => changePassword(false));
+  if ($("#chpin")) $("#chpin").addEventListener("click", () => makePin(false));
+}
+/* the employee agrees their hours are right (asked again on Thursday and Friday until it's done) */
+async function confirmHours(w, afterPunch) {
+  const emp = S.emp, wk = w.wk, early = !PAY.weekOver(wk);
+  const v = await ask({ title: afterPunch ? "Before you go: confirm your hours" : "Confirm your hours",
+    text: "By confirming, you agree the hours shown for " + weekLc(wk) + " are correct" + (early ? " so far" : "") + ": " + hrs(w.worked) + " hours worked" + (w.pto + w.sick + w.holiday ? ", plus " + hrs(w.pto + w.sick + w.holiday) + " hours of PTO, sick or holiday" : "") + "." + (afterPunch ? " If something's wrong, choose Not now and tell your manager." : ""),
+    buttons: [{ label: afterPunch ? "Not now" : "Cancel", value: false }, { label: "Confirm", value: true, kind: "btn-primary" }] });
+  if (!v) return false;
+  await addEvent(wk, emp.id, { type: "signoff" });
+  await notifyManagers(fullName(emp) + " confirmed their hours for " + weekLc(wk) + (early ? " so far" : "") + ": " + hrs(w.total) + " h.", { v: "empweek", id: emp.id, wk }, emp.id);
+  toast("Thanks, your hours are confirmed.");
+  return true;
+}
+/* where a phone is when it clocks in or out; gives up after a few seconds so it never holds up the punch */
+function getLoc(ms = 8000) {
+  return new Promise(res => {
+    let done = false; const fin = (v) => { if (!done) { done = true; res(v); } };
+    if (!navigator.geolocation) return fin({ err: "unsupported" });
+    setTimeout(() => fin({ err: "timeout" }), ms);
+    try {
+      navigator.geolocation.getCurrentPosition(p => fin({ lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy }),
+        e => fin({ err: e && e.code === 1 ? "denied" : e && e.code === 3 ? "timeout" : "unavailable" }), { enableHighAccuracy: true, timeout: ms - 500, maximumAge: 60000 });
+    } catch (_) { fin({ err: "unavailable" }); }
   });
-  $("#chpw").addEventListener("click", () => changePassword(false));
 }
 function reqRow(r) {
   const st = r.status === "approved" ? '<span class="tag ok">Approved</span>' : r.status === "denied" ? '<span class="tag bad">Not approved</span>' : '<span class="tag warn">Waiting for approval</span>';
@@ -1571,6 +1975,7 @@ async function requestFix(emp, wk) {
 async function viewManage(opts = {}) {
   if (!S.emp || !S.emp.admin) return go("home");
   const tab = ["cards", "team", "reports", "settings"].includes(opts.tab) ? opts.tab : "cards";
+  if (tab === "cards") { try { await syncNow(); } catch (_) {} }   // pick up payroll done by the 5 PM email and punches from other computers
   await loadEmps();
   view().innerHTML = navBar(tab) + '<div id="pane" style="display:grid;gap:18px"></div>';
   wireNav();
@@ -1643,79 +2048,21 @@ async function download(name, text, type = "text/csv") {
    Doing payroll locks the week and saves the hours paid. When payroll is done before the week is over
    (on Thursday), the rest of the week is estimated. Once the real times are in, any difference is added
    to the next payroll automatically, as a correction for that week. */
-const PK = ["reg", "ot", "pto", "sick", "holiday", "total"];
-const ZERO = () => ({ reg: 0, ot: 0, pto: 0, sick: 0, holiday: 0, total: 0 });
-const sgn = (v) => (v > 0 ? "+" : "") + hrs(v);
-const weekOver = (wk) => Date.now() >= addDays(fromKey(wk), 5).getTime();   // from Saturday morning
-const paidEarly = (meta, wk) => !!(meta && meta.locked && meta.lock.created < addDays(fromKey(wk), 5).getTime());
-const shortDay = (k) => fromKey(k).toLocaleDateString("en-US", { weekday: "short" });
+const { PK, ZERO, sgn, weekOver, paidEarly, shortDay, carriedFor, payState, correctionsFor } = PAY;
 const monthKey = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
 const monthLabel = (k) => { const [y, m] = k.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" }); };
-/* corrections for week wk already put into later payrolls (not counting the payroll for exceptWk) */
-async function carriedFor(empId, wk, exceptWk) {
-  const sum = ZERO(), where = []; const top = weekOf(new Date());
-  for (let x = shiftWeek(wk, 1), n = 0; x <= top && n < 12; x = shiftWeek(x, 1), n++) {
-    if (x === exceptWk) continue;
-    const m = await weekMeta(x); const s = m.locked && m.lock.snapshot && m.lock.snapshot[empId];
-    for (const c of (s && s.corr) || []) if (c.wk === wk) { PK.forEach(k => { sum[k] = r2(sum[k] + (Number(c[k]) || 0)); }); if (!where.includes(x)) where.push(x); }
-  }
-  return { sum, where };
-}
-/* where a paid week stands now: what was paid, corrections since, and any difference still to pay */
-async function payState(emp, wk, w, meta, exceptWk) {
-  if (!meta.locked) return null;
-  const s = (meta.lock.snapshot || {})[emp.id] || null;
-  const p = s || ZERO(), act = snapOf(w), car = await carriedFor(emp.id, wk, exceptWk);
-  const diff = {}; PK.forEach(k => { diff[k] = r2(act[k] - (Number(p[k]) || 0) - car.sum[k]); });
-  const over = weekOver(wk);
-  return { s, over, car, diff, paid: r2((Number(p.total) || 0) + car.sum.total), open: over && PK.some(k => Math.abs(diff[k]) >= 0.01) };
-}
-async function correctionsFor(emp, wk) {
-  const out = [];
-  for (let n = 10; n >= 1; n--) {
-    const v = shiftWeek(wk, -n); if (!weekOver(v)) continue;
-    const m = await weekMeta(v); if (!m.locked) continue;
-    const w = await weekFor(emp, v); const st = await payState(emp, v, w, m, wk);
-    if (st && st.open) out.push(Object.assign({ wk: v, paid: st.paid, actual: w.total, missed: w.issues.length > 0 }, st.diff));
-  }
-  return out;
-}
-/* a person's usual hours on that weekday, from the last 3 weeks */
-async function typicalDay(emp, wk, idx) {
-  const vals = [];
-  for (let n = 1; n <= 3; n++) {
-    const w = await weekFor(emp, shiftWeek(wk, -n)); if (!(w.worked > 0)) continue;
-    const d = w.days[idx]; if (d.entries.some(x => x.cat === "pto" || x.cat === "sick" || x.cat === "holiday")) continue;
-    vals.push(d.worked);
-  }
-  if (!vals.length) {
-    const w = await weekFor(emp, wk); const today = dayKey(new Date());
-    const done = w.days.slice(0, 5).filter(d => d.key < today && d.worked > 0).map(d => d.worked);
-    vals.push(done.length ? done.reduce((a, b) => a + b, 0) / done.length : 8);
-  }
-  return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length * 4) / 4;
-}
 async function doPayroll(wk, ws) {
-  const today = dayKey(new Date());
-  const estDays = weekDays(wk).slice(0, 5).filter(k => k >= today);
-  const people = ws.filter(w => w.emp.active !== false || w.total > 0);
+  await syncNow(); await loadEmps();
+  const estDays = PAY.estimateDays(wk);
+  const people = PAY.payPeople(wk, D.emps);
   const sugg = {};
-  for (const w of people) {
-    sugg[w.emp.id] = {};
-    for (const k of estDays) {
-      const i = weekDays(wk).indexOf(k), d = w.days[i];
-      const off = d.entries.filter(x => x.cat === "pto" || x.cat === "sick" || x.cat === "holiday").reduce((a, x) => a + x.hours, 0);
-      const doneToday = k === today && d.pairs.length && !d.pairs.some(p => p.live || p.bad);
-      sugg[w.emp.id][k] = doneToday ? r2(d.worked) : Math.max(0, (await typicalDay(w.emp, wk, i)) - off);
-    }
-  }
-  const corr = {};
-  for (const e of D.emps.filter(e => e.hourly !== false)) { const c = await correctionsFor(e, wk); if (c.length) corr[e.id] = c; }
+  for (const w of people) { sugg[w.emp.id] = {}; for (const k of estDays) sugg[w.emp.id][k] = PAY.suggestFor(w, wk, k); }
+  const corr = PAY.correctionsAll(wk, D.emps);
   const corrList = Object.keys(corr).flatMap(id => corr[id].map(c => Object.assign({ id }, c)));
   const pendOt = people.filter(w => w.otStatus === "pending" || w.otStatus === "changed").length, miss = people.filter(w => w.issues.length).length;
   const warn = [pendOt ? pendOt + " overtime approval" + (pendOt > 1 ? "s are" : " is") + " still waiting" : "", miss ? miss + " time card" + (miss > 1 ? "s have" : " has") + " a missed punch" : "",
     corrList.some(c => c.missed) ? "a correction below comes from a week with a missed punch" : ""].filter(Boolean);
-  const soFar = (w) => r2(w.days.filter(d => d.key < today).reduce((a, d) => a + d.worked, 0));
+  const soFar = PAY.soFar;
   const v = await ask({ title: "Payroll for " + weekLc(wk), wide: true, html:
     (estDays.length ? '<p>The week isn\'t over yet, so enter the hours you expect each person to work on ' + estDays.map(k => fmtDay(k)).join(" and ") + '. The numbers are filled in from their usual hours. Once the real times are in, any difference is added to the next payroll automatically.</p>' +
       '<div class="tbl-wrap"><table class="tbl est-t"><thead><tr><th>Employee</th><th class="num">Worked so far</th>' + estDays.map(k => '<th class="num">' + esc(fmtDay(k)) + '</th>').join("") + '</tr></thead><tbody>' +
@@ -1728,64 +2075,25 @@ async function doPayroll(wk, ws) {
       return true;
     } }] });
   if (!v) return;
-  const snapshot = {};
-  for (const w of people) {
-    const est = {}; let worked = 0;
-    for (const d of w.days) {
-      if (estDays.includes(d.key)) { const n = r2(Number($('[data-est="' + w.emp.id + '|' + d.key + '"]').value) || 0); est[d.key] = n; worked += n; }
-      else worked += d.worked;
-    }
-    worked = r2(worked); const reg = r2(Math.min(worked, OT_LIMIT)), ot = r2(Math.max(0, worked - OT_LIMIT));
-    snapshot[w.emp.id] = Object.assign({ worked, reg, ot, pto: w.pto, sick: w.sick, holiday: w.holiday, total: r2(reg + ot + w.pto + w.sick + w.holiday) }, estDays.length ? { est } : {});
-  }
-  for (const id of Object.keys(corr)) {
-    snapshot[id] = snapshot[id] || Object.assign({ worked: 0 }, ZERO());
-    snapshot[id].corr = corr[id].map(c => { const o = { wk: c.wk, paid: c.paid, actual: c.actual }; PK.forEach(k => { o[k] = c[k]; }); return o; });
-  }
+  const snapshot = PAY.makeSnapshot(people, estDays, (id, k) => $('[data-est="' + id + '|' + k + '"]').value, corr);
   await addWeekMeta(wk, { type: "lock", snapshot, early: estDays.length > 0 });
   await logChange("Did payroll for " + weekLc(wk) + (estDays.length ? " (" + estDays.map(fmtDay).join(", ") + " estimated)" : "") + (corrList.length ? "; corrections for earlier weeks included" : ""));
   for (const w of people) {
     if (w.emp.active === false) continue;
-    const s = snapshot[w.emp.id], c = (s.corr || []);
-    await notify(w.emp.id, "Your hours for " + weekLc(wk) + " went to payroll: " + hrs(s.total) + " h." +
-      (s.est ? " " + Object.keys(s.est).map(k => shortDay(k)).join(" and ") + " " + (Object.keys(s.est).length > 1 ? "were" : "was") + " estimated; if your real hours are different, the difference is fixed on the next payroll." : "") +
-      (c.length ? " It also includes " + c.map(x => sgn(x.total) + " h for " + weekLc(x.wk)).join(" and ") + "." : ""));
+    await notify(w.emp.id, PAY.paidNotice(snapshot[w.emp.id], wk));
   }
+  await mailIfLate(wk);
   go("payroll", { wk });
 }
-function payrollData(meta, wk) {
-  const snap = meta.lock.snapshot || {};
-  const rows = Object.keys(snap).map(id => {
-    const emp = D.emps.find(x => x.id === id) || { id, first: "(removed", last: "employee)" };
-    const s = snap[id], corr = s.corr || [];
-    const pay = {}; PK.forEach(k => { pay[k] = r2((Number(s[k]) || 0) + corr.reduce((a, c) => a + (Number(c[k]) || 0), 0)); });
-    return { emp, s, corr, pay };
-  }).sort((a, b) => fullName(a.emp).localeCompare(fullName(b.emp)));
-  const estDays = [...new Set(rows.flatMap(r => Object.keys(r.s.est || {})))].sort();
-  return { wk, rows, estDays, by: meta.lock.by, at: meta.lock.created };
-}
-const payNote = (r) => [Object.keys(r.s.est || {}).length ? Object.keys(r.s.est).sort().map(k => shortDay(k) + " estimated " + hrs(r.s.est[k]) + " h").join(", ") : "",
-  r.corr.length ? "Includes " + r.corr.map(c => sgn(c.total) + " h for week ending " + fmtDate(fridayOf(c.wk))).join(" and ") : ""].filter(Boolean).join(". ");
-function payrollHtml(P) {
-  const anyId = P.rows.some(r => r.emp.payrollId);
-  const T = ZERO(); P.rows.forEach(r => PK.forEach(k => { T[k] = r2(T[k] + r.pay[k]); }));
-  const allCorr = P.rows.flatMap(r => r.corr.map(c => Object.assign({ emp: r.emp }, c)));
-  const num = (v) => '<td class="num">' + hrs(v) + '</td>';
-  return '<section class="rp-page"><div class="rp-head"><img src="brand/masterpiece-logo.svg" alt="" class="rp-logo"><div><h1>Payroll Hours</h1><p>Masterpiece Construction Experts</p></div>' +
-    '<div class="rp-meta"><b>Week ending ' + esc(fmtLong(fridayOf(P.wk))) + '</b><span>' + esc(weekRange(P.wk)) + '</span><span>Prepared ' + esc(fmtStamp(P.at)) + (P.by ? " by " + esc(nameOf(P.by)) : "") + '</span></div></div>' +
-    (P.estDays.length ? '<p class="rp-callout"><b>' + esc(P.estDays.map(fmtDay).join(" and ")) + (P.estDays.length > 1 ? " are" : " is") + ' estimated.</b> If the real hours are different, the difference is added to next week\'s payroll.</p>' : "") +
-    '<table class="rp-t"><thead><tr><th>Employee</th>' + (anyId ? '<th>Payroll ID</th>' : "") + '<th class="num">Regular</th><th class="num">Overtime</th><th class="num">PTO</th><th class="num">Sick</th><th class="num">Holiday</th><th class="num">Total hours</th></tr></thead><tbody>' +
-    P.rows.map(r => '<tr><td><b>' + esc(fullName(r.emp)) + '</b>' + (payNote(r) ? '<div class="rp-sub">' + esc(payNote(r)) + '</div>' : "") + '</td>' + (anyId ? '<td>' + esc(r.emp.payrollId || "") + '</td>' : "") +
-      num(r.pay.reg) + num(r.pay.ot) + num(r.pay.pto) + num(r.pay.sick) + num(r.pay.holiday) + '<td class="num"><b>' + hrs(r.pay.total) + '</b></td></tr>').join("") +
-    '</tbody><tfoot><tr><td>All employees</td>' + (anyId ? '<td></td>' : "") + num(T.reg) + num(T.ot) + num(T.pto) + num(T.sick) + num(T.holiday) + num(T.total) + '</tr></tfoot></table>' +
-    (allCorr.length ? '<h2 class="rp-h">Corrections included from earlier weeks</h2><table class="rp-t"><thead><tr><th>Employee</th><th>Week ending</th><th class="num">Paid then</th><th class="num">Actual</th><th class="num">Regular</th><th class="num">Overtime</th><th class="num">PTO</th><th class="num">Sick</th><th class="num">Holiday</th><th class="num">Difference</th></tr></thead><tbody>' +
-      allCorr.map(c => '<tr><td>' + esc(fullName(c.emp)) + '</td><td>' + esc(fmtDate(fridayOf(c.wk))) + '</td>' + num(c.paid) + num(c.actual) + ["reg", "ot", "pto", "sick", "holiday"].map(k => '<td class="num">' + (c[k] ? sgn(c[k]) : "") + '</td>').join("") + '<td class="num"><b>' + sgn(c.total) + '</b></td></tr>').join("") + '</tbody></table>' : "") +
-    '<ul class="rp-notes">' + (allCorr.length ? '<li>The hours in the first table already include the corrections.</li>' : "") + '<li>Overtime is hours worked over ' + OT_LIMIT + ' in the pay week.</li></ul></section>';
-}
-function payrollCsv(P) {
-  const rows = [["Employee", "Payroll ID", "Position", "Week ending", "Regular hours", "Overtime hours", "PTO hours", "Sick hours", "Holiday hours", "Total hours", "Notes"]];
-  for (const r of P.rows) rows.push([fullName(r.emp), r.emp.payrollId || "", r.emp.position || "", fridayOf(P.wk), hrs(r.pay.reg), hrs(r.pay.ot), hrs(r.pay.pto), hrs(r.pay.sick), hrs(r.pay.holiday), hrs(r.pay.total), payNote(r)]);
-  return rows.map(r => r.map(csvCell).join(",")).join("\r\n") + "\r\n";
+const payrollData = (meta, wk) => PAY.payrollData(meta, wk, D.emps);
+const payrollHtml = (P) => PAY.payrollHtml(P, { logo: "brand/masterpiece-logo.svg" });
+const payrollCsv = PAY.payrollCsv;
+/* the sheet is emailed at 5 PM Thursday; payroll done (or redone) after that is emailed right away */
+async function mailIfLate(wk) {
+  if (!(D.settings && D.settings.payrollEmail)) return;
+  if (Date.now() < PAY.thursday5pm(wk)) { toast("Done. It will be emailed to " + D.settings.payrollEmail + " at 5 PM Thursday.", 5000); return; }
+  try { const r = await api("emailPayroll", { wk }); toast("Done, and emailed to " + r.to + ".", 5000); }
+  catch (e) { toast("Done, but the email didn't send: " + e.message, 7000); }
 }
 function printHtml(html) {
   let area = $("#print-area"); if (!area) { area = document.createElement("div"); area.id = "print-area"; document.body.appendChild(area); }
@@ -1797,6 +2105,7 @@ function printHtml(html) {
 }
 async function viewPayroll({ wk }) {
   if (!S.emp || !S.emp.admin) return go("home");
+  try { await syncNow(); } catch (_) {}
   await loadEmps();
   const meta = await weekMeta(wk);
   if (!meta.locked) return go("manage", { tab: "cards", wk });
@@ -1804,7 +2113,7 @@ async function viewPayroll({ wk }) {
   view().innerHTML = navBar("cards") +
     '<div class="page-head no-print"><button class="btn btn-text" type="button" id="back">← Time Cards</button><div class="row"><button class="btn btn-secondary" type="button" id="pcsv">Download spreadsheet</button><button class="btn btn-primary" type="button" id="pprint">Print</button></div></div>' +
     '<div class="card report">' + payrollHtml(P) + '</div>' +
-    '<p class="hint no-print">Send these hours to your payroll company: print it, save it as a PDF from the print screen, or download the spreadsheet. It stays here under Time Cards for this week.</p>';
+    '<p class="hint no-print">' + (D.settings && D.settings.payrollEmail ? "This sheet is emailed to " + esc(D.settings.payrollEmail) + " at 5 PM Thursday (right away if payroll is done or redone after that). " : "") + 'You can also print it, save it as a PDF from the print screen, or download the spreadsheet. It stays here under Time Cards for this week.</p>';
   wireNav();
   $("#back").addEventListener("click", () => go("manage", { tab: "cards", wk }));
   $("#pprint").addEventListener("click", () => printHtml(payrollHtml(P)));
@@ -1897,6 +2206,7 @@ function printSheets(list) {
 /* one employee's week, for the manager */
 async function viewEmpWeek({ id, wk }) {
   if (!S.emp || !S.emp.admin) return go("home");
+  try { await syncNow(); } catch (_) {}
   await loadEmps();
   const emp = D.emps.find(e => e.id === id); if (!emp) return go("manage");
   const [w, meta, bal] = await Promise.all([weekFor(emp, wk), weekMeta(wk), balances(emp)]);
@@ -2074,7 +2384,7 @@ async function inviteDialog(role) {
   const link = joinLink(r.code);
   const first = name.split(" ")[0];
   const body = dev ? "Open this link on the office computer to connect it to the Masterpiece Time Clock:\n\n" + link
-    : "Hi" + (first ? " " + first : "") + ",\n\nHere's your invite to the Masterpiece Time Clock. " + (phone ? "Open this link on your phone" : "Open this link on an office computer") + ", then make your account with your name, position and a password:\n\n" + link + "\n\nThe link works once to make your account. After that, just sign in with your name and password." + (phone ? " Tip: add the page to your home screen so it's one tap away." : "");
+    : "Hi" + (first ? " " + first : "") + ",\n\nHere's your invite to the Masterpiece Time Clock. " + (phone ? "Open this link on your phone" : "Open this link on an office computer") + ", then make your account with your name, position, a password and a 6-digit PIN:\n\n" + link + "\n\nThe link works once to make your account. After that, just sign in with your name and password." + (phone ? " Tip: add the page to your home screen so it's one tap away." : "");
   await logChange(dev ? "Made a link to connect another office computer" : "Invited " + (name || "an employee") + (phone ? " (phone)" : ""));
   await ask({ title: dev ? "Link ready" : "Invite ready", wide: true, html: '<div class="field"><label for="il">Link</label><input type="text" id="il" readonly value="' + esc(link) + '"></div>' +
     '<p class="hint">' + (dev ? "It works on one computer." : "It makes one account. Opening it again on another office computer just asks you to allow that computer.") + '</p>' +
@@ -2116,7 +2426,7 @@ async function editEmployee(emp) {
   const v = await pending;
   if (v === null || v === false) return;
   e.first = $("#ef").value.trim(); e.last = $("#el").value.trim(); e.position = $("#ep").value.trim(); e.hourly = $("#eh").checked; e.admin = $("#ea").checked; e.payrollId = $("#epid").value.trim(); delete e.isNew;
-  if (isNew) { const tp = $("#et").value; const made = await api("addEmployee", { e, temp: tp }); Mirror.rows.set("employees/" + made.emp.id + ".json", JSON.stringify(made.emp)); await syncNow(); if (e.payrollId) await saveEmp(Object.assign({}, made.emp, { payrollId: e.payrollId })); await logChange("Added employee " + fullName(e)); await alertBox("Employee added", fullName(e) + "'s temporary password is: " + tp + ". They'll choose their own the first time they sign in."); }
+  if (isNew) { const tp = $("#et").value; const made = await api("addEmployee", { e, temp: tp }); Mirror.set("employees/" + made.emp.id + ".json", JSON.stringify(made.emp)); await syncNow(); if (e.payrollId) await saveEmp(Object.assign({}, made.emp, { payrollId: e.payrollId })); await logChange("Added employee " + fullName(e)); await alertBox("Employee added", fullName(e) + "'s temporary password is: " + tp + ". They'll choose their own the first time they sign in."); }
   else {
     e.active = $("#ex").checked;
     const bp = Number($("#bp").value) || 0, bs = Number($("#bs").value) || 0, note = $("#bn").value.trim() || "Balance change";
@@ -2186,6 +2496,7 @@ async function paneSettings(P, year, open) {
     ["hol", "Paid holidays", nHol + " paid holiday" + (nHol === 1 ? "" : "s") + " in " + year + ". Add, change or remove holidays."],
     ["log", "Change history", "See every change a manager has made to time cards, holidays and settings."],
     ["round", "Rounding clock times", r ? "Counted to the nearest " + r + " minutes" : "Counted exactly, to the minute"],
+    ["email", "Payroll email", D.settings.payrollEmail ? "Each payroll sheet goes to " + D.settings.payrollEmail + " on Thursday at 5 PM." : "Not set: add an email to get each week's payroll sheet automatically."],
     ["code", "Manager password recovery code", "Make a new code if the one from setup is lost."],
   ];
   P.innerHTML = '<div class="card acc-card"><div class="card-head"><h2>Settings</h2><p class="muted">Tap a setting to open it.</p></div>' +
@@ -2193,7 +2504,7 @@ async function paneSettings(P, year, open) {
     '<div id="s-core" hidden></div>';
   paneHolidays($("#sec-hol"), year);
   paneSettingsCore($("#s-core"));
-  for (const k of ["round", "code"]) { const c = $('#s-core [data-sec="' + k + '"]'); if (c) $("#sec-" + k).appendChild(c); }
+  for (const k of ["round", "email", "code"]) { const c = $('#s-core [data-sec="' + k + '"]'); if (c) $("#sec-" + k).appendChild(c); }
   let logDone = false;
   const loadLogNow = async () => { if (logDone) return; logDone = true; const box = document.createElement("div"); await paneLog(box); $("#sec-log").appendChild($(".tbl-wrap", box) || $("p.muted", box) || box); };
   $$("details.acc").forEach(d => d.addEventListener("toggle", () => { if (d.open) { current.open = d.dataset.accSec; if (d.dataset.accSec === "log") loadLogNow(); } }));
@@ -2203,11 +2514,26 @@ function paneSettingsCore(P) {
   const r = Number(D.settings.round) || 0;
   P.innerHTML = '<div class="card" data-sec="round"><div class="card-head"><h3>Rounding</h3><p class="muted">Choose how clock-in and clock-out times are counted toward hours. The exact times are always kept on the time card.</p></div>' +
     '<div class="field" style="max-width:320px"><select id="round"><option value="0"' + (r === 0 ? " selected" : "") + '>Exact, to the minute</option><option value="5"' + (r === 5 ? " selected" : "") + '>Nearest 5 minutes</option><option value="15"' + (r === 15 ? " selected" : "") + '>Nearest 15 minutes</option></select></div></div>' +
+    '<div class="card" data-sec="email"><div class="card-head"><h3>Payroll email</h3><p class="muted">Every Thursday at 5 PM (Boise time) the week\'s payroll sheet is emailed here, with the spreadsheet and a PDF attached. If payroll isn\'t done by then, the time clock does it with each person\'s usual hours for Friday. To change it, unlock the week and do payroll again: the new sheet is emailed right away.</p></div>' +
+    '<div class="field" style="max-width:420px"><label for="pmail">Send payroll sheets to</label><input type="email" id="pmail" autocomplete="email" value="' + esc(D.settings.payrollEmail || "") + '" placeholder="name@example.com"></div>' +
+    '<div class="row"><button class="btn btn-primary" type="button" id="pmail-save">Save</button><button class="btn btn-secondary" type="button" id="pmail-test">Send a test email</button></div><p class="hint" id="pmail-msg"></p></div>' +
     '<div class="card" data-sec="code"><div class="card-head"><h3>Manager recovery code</h3><p class="muted">The code you wrote down at setup lets a manager reset a forgotten password. If it\'s lost, make a new one here. The old code stops working.</p></div><div><button class="btn btn-secondary" type="button" id="recode">Make a new recovery code</button></div></div>' +
     '';
   $("#round").addEventListener("change", async () => {
     await loadSettings(); D.settings.round = Number($("#round").value); await saveSettings();
     await logChange("Changed rounding to " + ($("#round").value === "0" ? "exact minutes" : "nearest " + $("#round").value + " minutes")); toast("Saved.");
+  });
+  $("#pmail-save").addEventListener("click", async () => {
+    const v = $("#pmail").value.trim();
+    if (v && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) { $("#pmail-msg").textContent = "That doesn't look like an email address."; return; }
+    await loadSettings(); D.settings.payrollEmail = v; await saveSettings();
+    await logChange(v ? "Payroll sheets will be emailed to " + v : "Turned off the payroll email");
+    $("#pmail-msg").textContent = v ? "Saved. Use “Send a test email” to make sure it arrives." : "Saved. Payroll sheets won't be emailed.";
+  });
+  $("#pmail-test").addEventListener("click", async () => {
+    $("#pmail-msg").textContent = "Sending…";
+    try { const r = await api("testEmail"); $("#pmail-msg").textContent = "Sent to " + r.to + ". Check the inbox (and the spam folder)." + (r.scheduled ? "" : " The Thursday schedule couldn't be turned on: in Apps Script, run setUpThursdayEmail once."); }
+    catch (e) { $("#pmail-msg").textContent = e.message; }
   });
   $("#recode").addEventListener("click", async () => {
     const code = newCode();
@@ -2387,7 +2713,8 @@ async function viewReport(opts) {
     await enterApp();
   } catch (e) { showError(e); }
 })();
-if (MOCK) window.__tc = { D, S, computeWeek, weekOf, addEvent, api, syncNow, Mirror, Conn };
+if (MOCK) window.__tc = { D, S, computeWeek, weekOf, addEvent, api, syncNow, Mirror, Conn, PAY,
+  cron: () => { mock = mock || MpcMockServer(params.get("mock") || "1"); return mock.cron(); }, mail: () => { mock = mock || MpcMockServer(params.get("mock") || "1"); return mock.mail(); } };
 })();
 
 </script>
