@@ -9,7 +9,7 @@ Clock in and out, time off, overtime approvals, weekly payroll and time card sum
 
 Records live in a private Google Apps Script server in the owner's Google account (a Google Sheet only the owner can open). The website keeps no employee data. Passwords and PINs are checked on that server.
 
-- Employees sign in with a 6-digit PIN to clock in and out (and confirm their hours). Their password is for time off requests, fixing punches and changing the PIN. Managers use their password for the manager pages.
+- Employees sign in with only a 6-digit PIN, for everything. Managers also have a password, which opens the manager pages. A manager can reset anyone's PIN from Team.
 - Only office computers the manager allows can be used, plus each field worker's own phone (from their phone invite). Phone punches save the phone's location; office computers don't.
 - Every Thursday at 5 PM Boise time the server emails the week's payroll sheet (spreadsheet + PDF) to the address in Settings → Payroll email. If payroll wasn't done by then, it does it with each person's usual hours for Friday.
 
