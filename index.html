@@ -1163,7 +1163,7 @@ function MpcMockServer(ns) {
 (() => {
 "use strict";
 /* ================================================================ basics */
-const APP_VERSION = "2.2.0";
+const APP_VERSION = "2.2.1";
 const ROOT_NAME = "Masterpiece Time Clock";
 const SEAL_SALT = "mpc-timeclock-seal-v1";
 const OT_LIMIT = 40;                       // hours worked in a week before overtime
@@ -1385,6 +1385,11 @@ async function computeTodos(emp) {
       let has = false; for (const e of active()) if ((await ledger(e.id)).some(x => x.ref === "month:" + mkNow)) { has = true; break; }
       if (!has) out.push({ key: "month:" + mkNow, t: new Date(now.getFullYear(), now.getMonth(), 1).getTime(), text: "Add " + monthLabel(mkNow).split(" ")[0] + "'s earned PTO and sick hours.", link: { v: "manage", tab: "team", monthly: true } });
     }
+    {   // next year's paid holidays (from November), or this year's if they were never added
+      const y = now.getFullYear(), H = (D.settings && D.settings.holidays) || [], has = (yr) => H.some(h => h.date.startsWith(yr + "-"));
+      const need = now.getMonth() >= 10 && has(y) && !has(y + 1) ? y + 1 : !has(y) && has(y - 1) ? y : 0;
+      if (need) out.push({ key: "hol:" + need, t: need > y ? new Date(y, 10, 1).getTime() : new Date(y, 0, 1).getTime(), text: "Choose the paid holidays for " + need + ". Until you do, no holidays are added to time cards in " + need + ".", link: { v: "manage", tab: "settings", open: "hol", year: need } });
+    }
     if (now.getDay() === 4 || now.getDay() === 5) {
       const m0 = await weekMeta(thisWk);
       if (!m0.locked) out.push({ key: "pay:" + thisWk, t: new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), text: "Payroll day: do payroll for " + weekLc(thisWk) + ".", link: { v: "manage", tab: "cards", wk: thisWk } });
@@ -1449,7 +1454,7 @@ async function markRead(items) {
 }
 function openLink(l) {
   if (!l) return;
-  if (l.v === "manage") return go("manage", { tab: l.tab || "cards", wk: l.wk, monthly: l.monthly });
+  if (l.v === "manage") return go("manage", { tab: l.tab || "cards", wk: l.wk, monthly: l.monthly, open: l.open, year: l.year });
   if (l.v === "empweek") return go("empweek", { id: l.id, wk: l.wk });
   if (l.v === "me") return go("me", { wk: l.wk });
 }
@@ -1895,7 +1900,7 @@ async function viewMe(opts = {}) {
       const ask2 = dir === "out" && (day === 4 || day === 5) && wNow.total > 0 && !(wNow.signed && !wNow.changedAfterSign);
       toast((dir === "in" ? "Clocked in at " : "Clocked out at ") + fmtTime(t) + "." + (over ? " You're over 40 hours this week, so the overtime goes to the manager to approve." : "") + (leave && !ask2 ? " Signing you out…" : ""), over ? 6000 : 3500);
       if (ask2) { await confirmHours(wNow, true); if (leave) return signOut(); return go("me"); }
-      if (leave) setTimeout(() => { if (S.emp && S.emp.id === emp.id && current.name === "me") signOut(); }, over ? 5000 : 2500);
+      if (leave) { const tok = S.tok; setTimeout(() => { if (S.tok === tok && S.emp && S.emp.id === emp.id && current.name === "me") signOut(); }, over ? 5000 : 2500); }
       go("me");
     } catch (err) { b.disabled = false; b.textContent = isIn ? "Clock out" : "Clock in"; showError(err); }
   });
@@ -2364,7 +2369,7 @@ async function panePeople(P) {
     D.emps.map((e, i) => '<tr><td><b>' + esc(fullName(e)) + '</b>' + (e.admin ? ' <span class="tag ok">Manager</span>' : "") + '</td><td>' + esc(e.position || "") + (e.hourly === false ? ' <span class="hint">(not hourly)</span>' : "") + '</td><td class="num">' + hrs(bals[i].pto) + '</td><td class="num">' + hrs(bals[i].sick) + '</td><td>' + (e.active === false ? '<span class="tag">Inactive</span>' : '<span class="tag ok">Active</span>') + '</td>' +
       '<td class="num"><button class="btn btn-secondary mini" data-edit-emp="' + e.id + '">Edit</button></td></tr>').join("") + '</tbody></table></div>' +
     (openInv.length ? '<p class="hint">Invites sent but not used yet: ' + openInv.map(i => esc(i.name || "someone") + (i.phone ? " (phone)" : "") + ", " + esc(fmtDate(dayKey(i.created)))).join(" · ") + '</p>' : "") +
-    '<details class="more"><summary>Add someone without an email invite</summary><div><p class="muted">Makes the account with a temporary password that you give them. They choose their own the first time they sign in.</p><div><button class="btn btn-secondary" type="button" id="add-emp">Add employee</button></div></div></details></div>' +
+    '<details class="more"><summary>Add someone without an email invite</summary><div><p class="muted">Makes the account and gives you a temporary PIN to hand them. They pick their own PIN the first time they sign in.</p><div><button class="btn btn-secondary" type="button" id="add-emp">Add employee</button></div></div></details></div>' +
     '<div class="card"><div class="page-head"><div class="card-head"><h3>Computers and phones</h3><p class="muted">Only these can use the time clock. Remove one that\'s no longer used.</p></div><button class="btn btn-secondary" type="button" id="connect-pc">Connect another office computer</button></div>' +
     (dv.devices.length ? '<div class="list">' + dv.devices.sort((a, b) => a.created - b.created).map(d => '<div class="item-row"><div><span class="t">' + esc(d.label) + (d.emp ? " · " + esc(nameOf(d.emp)) : "") + '</span><span class="s">' +
       (d.status === "allowed" ? "Allowed" : d.status === "pending" ? "Waiting for you to allow it" : "Not allowed") + ' · connected ' + esc(fmtDate(dayKey(d.created))) + '</span></div>' +
