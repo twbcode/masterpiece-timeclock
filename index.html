@@ -718,7 +718,7 @@ function mpcFolders(rows) {   // rows: [{ path, data }]
      - the browser preview and the automated tests, with records kept in the browser.
    It decides who may read and change what. Passwords are checked here, never on the computer.
    ================================================================================================ */
-var MPC_SERVER_VERSION = 2;
+var MPC_SERVER_VERSION = 3;
 
 /* ---------- SHA-256 (plain JavaScript, so it gives the same answer everywhere) ---------- */
 function mpcSha256(ascii) {
@@ -850,7 +850,6 @@ function MpcServer(store, env) {
       fail("Only a manager can change time cards.", "denied");
     }
     if ((m = /^requests\/([^/]+)$/.exec(path))) {
-      if (u.pin) fail("Sign in with your password to send a request.", "denied");
       if (existing || o.emp !== me || o.status !== "pending") fail("Only a manager can decide requests.", "denied");
       return path;
     }
@@ -1173,7 +1172,7 @@ function MpcMockServer(ns) {
 (() => {
 "use strict";
 /* ================================================================ basics */
-const APP_VERSION = "2.3.0";
+const APP_VERSION = "2.3.1";
 const ROOT_NAME = "Masterpiece Time Clock";
 const SEAL_SALT = "mpc-timeclock-seal-v1";
 const OT_LIMIT = 40;                       // hours worked in a week before overtime
@@ -1733,7 +1732,7 @@ async function viewHome() {
     if (!!b.device.phone !== !!Conn.phone) { Conn.phone = !!b.device.phone; saveConn(); }
     if (b.device.phone && b.people.length === 1) return go("signin", { id: b.people[0].id, phone: true });
     const now = new Date();
-    view().innerHTML = (D.serverVersion && D.serverVersion < 2 ? '<div class="note warn" style="margin-bottom:14px"><b>Server update required</b><span>PIN sign-in and the Thursday payroll email won\'t work until the owner updates the server code in Apps Script and deploys a new version (Deploy → Manage deployments → Edit → New version).</span></div>' : "") + '<div class="now"><div class="now-time" id="now-time">' + fmtTime(now) + '</div><div class="now-date">' + esc(fmtLong(dayKey(now))) + '</div></div>' +
+    view().innerHTML = (D.serverVersion && D.serverVersion < 3 ? '<div class="note warn" style="margin-bottom:14px"><b>Server update required</b><span>Some features won\'t work until the owner updates the server code in Apps Script and deploys a new version (Deploy → Manage deployments → Edit → New version).</span></div>' : "") + '<div class="now"><div class="now-time" id="now-time">' + fmtTime(now) + '</div><div class="now-date">' + esc(fmtLong(dayKey(now))) + '</div></div>' +
       (b.people.length ? '<div class="card-head" style="text-align:center"><h3>Select your name to clock in or out</h3></div>' : '<div class="empty"><b>No employees yet</b><span class="muted">Managers can invite employees from the Team page.</span></div>') +
       '<div class="tiles">' + b.people.map(e => {
         const chip = !e.hourly ? '<span class="chip out">Manager</span>' : e.inSince ? '<span class="chip in">In since ' + fmtTime(e.inSince) + '</span>' : '<span class="chip out">Out</span>';
@@ -1922,9 +1921,10 @@ async function viewMe(opts = {}) {
   });
   $("#prev").addEventListener("click", () => go("me", { wk: shiftWeek(wk, -1) }));
   $("#next").addEventListener("click", () => go("me", { wk: shiftWeek(wk, 1) }));
-  if ($("#fix-now")) $("#fix-now").addEventListener("click", () => pinMode ? needPassword("Sign in with your password to request a correction.") : requestFix(emp, wk));
+  const oldServer = pinMode && D.serverVersion < 3;   // servers before version 3 only take requests from a password sign-in
+  if ($("#fix-now")) $("#fix-now").addEventListener("click", () => oldServer ? needPassword("Sign in with your password to request a correction.") : requestFix(emp, wk));
   if ($("#ask")) $("#ask").addEventListener("click", async () => {
-    if (pinMode) return needPassword("Sign in with your password to submit a request.");
+    if (oldServer) return needPassword("Sign in with your password to submit a request.");
     const v = await ask({ title: "New request", html: '<div class="list"><button class="choice" type="button" data-c="off"><b>Time off</b><span class="hint">Request PTO or sick leave for one or more days.</span></button>' +
       '<button class="choice" type="button" data-c="fix"><b>Missed punch correction</b><span class="hint">Forgot to clock in or out? Submit the correct time.</span></button></div>', buttons: [{ label: "Cancel", value: null }],
       onOpen: (done) => $$("[data-c]", dlg).forEach(b => b.addEventListener("click", () => done(b.dataset.c))) });

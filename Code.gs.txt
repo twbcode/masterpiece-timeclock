@@ -283,7 +283,7 @@ function mpcFolders(rows) {   // rows: [{ path, data }]
      - the browser preview and the automated tests, with records kept in the browser.
    It decides who may read and change what. Passwords are checked here, never on the computer.
    ================================================================================================ */
-var MPC_SERVER_VERSION = 2;
+var MPC_SERVER_VERSION = 3;
 
 /* ---------- SHA-256 (plain JavaScript, so it gives the same answer everywhere) ---------- */
 function mpcSha256(ascii) {
@@ -415,7 +415,6 @@ function MpcServer(store, env) {
       fail("Only a manager can change time cards.", "denied");
     }
     if ((m = /^requests\/([^/]+)$/.exec(path))) {
-      if (u.pin) fail("Sign in with your password to send a request.", "denied");
       if (existing || o.emp !== me || o.status !== "pending") fail("Only a manager can decide requests.", "denied");
       return path;
     }
