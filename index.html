@@ -394,6 +394,16 @@ ul.plain { margin: 0 0 8px; padding-left: 18px; display: grid; gap: 4px; font-si
 .field .pin-in { max-width: 260px; }
 a.loc { font-size: 12.5px; white-space: nowrap; margin-left: 4px; }
 a.loc { color: var(--accent); text-decoration: none; } a.loc:hover { text-decoration: underline; }
+/* 2.3: polish */
+.page-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 16px; flex-wrap: wrap; }
+.page-head > .card-head { flex: 1 1 320px; min-width: 0; }
+.page-head > .row { flex: 0 1 auto; min-width: 0; }
+dialog .row.start, dialog .field .row { justify-content: flex-start; margin-top: 0; }
+a.loc { display: inline-flex; align-items: center; gap: 3px; font-weight: 600; }
+a.loc .ico { flex: none; }
+.tbl td:first-child b { white-space: nowrap; }
+.punches { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.hol-yr { font-size: 14px; font-weight: 700; color: var(--muted); margin: 6px 0 -4px; text-transform: uppercase; letter-spacing: .04em; }
 
 </style>
 
@@ -1163,7 +1173,7 @@ function MpcMockServer(ns) {
 (() => {
 "use strict";
 /* ================================================================ basics */
-const APP_VERSION = "2.2.1";
+const APP_VERSION = "2.3.0";
 const ROOT_NAME = "Masterpiece Time Clock";
 const SEAL_SALT = "mpc-timeclock-seal-v1";
 const OT_LIMIT = 40;                       // hours worked in a week before overtime
@@ -1204,6 +1214,12 @@ const timeVal = (t) => { const d = new Date(t); return pad2(d.getHours()) + ":" 
 const fullName = (e) => (e ? (e.first + " " + e.last).trim() : "Someone");
 const initials = (e) => ((e.first || "?")[0] + (e.last || "")[0] || "").toUpperCase();
 const nameOf = (id) => fullName(D.emps.find(e => e.id === id));
+/* a list of dates as a range when they're consecutive weekdays ("Mon, Dec 21 – Tue, Dec 22"), otherwise separated by semicolons */
+const datesText = (ds) => { ds = (ds || []).slice().sort(); if (ds.length < 2) return ds.map(fmtDay).join("");
+  const next = (k) => { let d = addDays(fromKey(k), 1); while (!(d.getDay() % 6)) d = addDays(d, 1); return dayKey(d); };
+  return ds.every((k, i) => !i || next(ds[i - 1]) === k) ? fmtDay(ds[0]) + " – " + fmtDay(ds[ds.length - 1]) : ds.map(fmtDay).join("; "); };
+const issueText = (x) => String(x).replace(/: ([A-Z])/, (m, c) => ": " + c.toLowerCase());
+const PIN_ICON = '<svg class="ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s7-6.1 7-12a7 7 0 0 0-14 0c0 5.9 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>';
 
 /* ================================================================ storage: the private server */
 /* All records live on the private server (Google Apps Script in the owner's Google account). The program keeps
@@ -1224,11 +1240,11 @@ async function api(a, body = {}) {
     if (!Conn.url) throw new ApiError("This computer isn't connected to the time clock. Open your invite email on it.", "nodevice");
     let r;
     try { r = await fetch(Conn.url, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(req), redirect: "follow" }); }
-    catch (_) { throw new ApiError("The time clock needs an internet connection. Check the internet and try again.", "offline"); }
-    try { res = await r.json(); } catch (_) { throw new ApiError("The time clock server didn't answer properly. Try again in a minute.", "server"); }
+    catch (_) { throw new ApiError("No internet connection. Check your connection and try again.", "offline"); }
+    try { res = await r.json(); } catch (_) { throw new ApiError("The time clock server didn't respond. Please try again in a minute.", "server"); }
   }
   if (!res.ok) {
-    if (res.code === "signedout" && S.emp) { S.emp = null; S.tok = null; Mirror.clear(); paintBar(); go("home"); toast("You were signed out. Please sign in again."); }
+    if (res.code === "signedout" && S.emp) { S.emp = null; S.tok = null; Mirror.clear(); paintBar(); go("home"); toast("Your session ended. Please sign in again."); }
     throw new ApiError(res.error, res.code);
   }
   return res.r;
@@ -1280,18 +1296,18 @@ function newCode() {
   return [...r].map(x => A[x % A.length]).join("").replace(/(.{4})(?=.)/g, "$1-");
 }
 /* password rules: at least 8 characters, an uppercase letter, a lowercase letter and a special character */
-const PW_RULES = "At least 8 characters, with an uppercase letter, a lowercase letter and a special character (like ! # $ or ?).";
-const pwProblem = (a, b) => a.length < 8 ? "The password needs at least 8 characters."
-  : !/[A-Z]/.test(a) ? "The password needs at least one uppercase letter (A–Z)."
-  : !/[a-z]/.test(a) ? "The password needs at least one lowercase letter (a–z)."
-  : !/[^A-Za-z0-9]/.test(a) ? "The password needs at least one special character, like ! # $ or ?."
-  : a !== b ? "The two passwords don't match." : "";
+const PW_RULES = "At least 8 characters, including an uppercase letter, a lowercase letter and a special character (such as ! # $ or ?).";
+const pwProblem = (a, b) => a.length < 8 ? "Password must be at least 8 characters."
+  : !/[A-Z]/.test(a) ? "Password must include an uppercase letter (A–Z)."
+  : !/[a-z]/.test(a) ? "Password must include a lowercase letter (a–z)."
+  : !/[^A-Za-z0-9]/.test(a) ? "Password must include a special character, such as ! # $ or ?."
+  : a !== b ? "Passwords don't match." : "";
 const pwHint = '<p class="hint">' + PW_RULES + '</p>';
 /* the 6-digit PIN is only for clocking in and out (and confirming hours) */
-const pinProblem = (a, b) => !/^[0-9]{6}$/.test(a) ? "The PIN needs exactly 6 numbers." : /^(.)\1{5}$/.test(a) ? "Pick a PIN that isn't the same number 6 times."
-  : "0123456789".includes(a) || "9876543210".includes(a) ? "Pick a PIN that isn't a straight run like 123456." : a !== b ? "The two PINs don't match." : "";
+const pinProblem = (a, b) => !/^[0-9]{6}$/.test(a) ? "PIN must be exactly 6 digits." : /^(.)\1{5}$/.test(a) ? "PIN can't be the same digit six times."
+  : "0123456789".includes(a) || "9876543210".includes(a) ? "PIN can't be a sequence like 123456." : a !== b ? "PINs don't match." : "";
 const pinField = (id, label) => '<div class="field"><label for="' + id + '">' + label + '</label><input type="password" id="' + id + '" class="pin-in" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off"></div>';
-const pinHint = '<p class="hint">6 numbers you\'ll type to sign in and clock in or out. Not the same number six times, and not a run like 123456.</p>';
+const pinHint = '<p class="hint">Six digits used to sign in and to clock in and out. Avoid repeated digits (111111) and sequences (123456).</p>';
 
 /* ================================================================ data */
 const D = { settings: null, emps: [] };
@@ -1376,44 +1392,44 @@ async function saveTodoKeys(empId, set) { await writeJson(["notes", empId], "rea
 async function computeTodos(emp) {
   const out = []; const now = new Date(); const thisWk = weekOf(now);
   if (emp.admin && !S.pin) {
-    try { const dv = await api("devices"); for (const d of dv.devices.filter(x => x.status === "pending")) out.push({ key: "dev:" + d.id, t: d.created, text: "A new computer wants to use the time clock (" + d.label + "). Allow it only if it's an office computer.", link: { v: "manage", tab: "team" } }); } catch (_) {}
+    try { const dv = await api("devices"); for (const d of dv.devices.filter(x => x.status === "pending")) out.push({ key: "dev:" + d.id, t: d.created, text: "A new computer is requesting access (" + d.label + "). Approve it only if it's an office computer.", link: { v: "manage", tab: "team" } }); } catch (_) {}
     const reqs = (await loadRequests()).filter(r => r.status === "pending" && D.emps.some(e => e.id === r.emp));
-    for (const r of reqs) out.push({ key: "req:" + r.id, t: r.created, text: nameOf(r.emp) + " is asking for " + (r.kind === "fix" ? "a missed punch fix, " + fmtDay(r.date) : (CATS[r.kind] || r.kind) + ", " + (r.dates || [r.date]).map(fmtDay).join(", ")) + ". Approve or decline it.", link: { v: "manage", tab: "cards" } });
+    for (const r of reqs) out.push({ key: "req:" + r.id, t: r.created, text: nameOf(r.emp) + " submitted " + (r.kind === "fix" ? "a missed punch correction for " + fmtDay(r.date) : (r.kind === "pto" ? "a PTO" : "a sick leave") + " request for " + datesText(r.dates || [r.date])) + ".", link: { v: "manage", tab: "cards" } });
     const hourly = active().filter(e => e.hourly !== false);
     const mkNow = monthKey(now);
     if (active().some(e => Number(e.monthPto) > 0 || Number(e.monthSick) > 0)) {
       let has = false; for (const e of active()) if ((await ledger(e.id)).some(x => x.ref === "month:" + mkNow)) { has = true; break; }
-      if (!has) out.push({ key: "month:" + mkNow, t: new Date(now.getFullYear(), now.getMonth(), 1).getTime(), text: "Add " + monthLabel(mkNow).split(" ")[0] + "'s earned PTO and sick hours.", link: { v: "manage", tab: "team", monthly: true } });
+      if (!has) out.push({ key: "month:" + mkNow, t: new Date(now.getFullYear(), now.getMonth(), 1).getTime(), text: "Add earned PTO and sick leave for " + monthLabel(mkNow).split(" ")[0] + ".", link: { v: "manage", tab: "team", monthly: true } });
     }
     {   // next year's paid holidays (from November), or this year's if they were never added
       const y = now.getFullYear(), H = (D.settings && D.settings.holidays) || [], has = (yr) => H.some(h => h.date.startsWith(yr + "-"));
       const need = now.getMonth() >= 10 && has(y) && !has(y + 1) ? y + 1 : !has(y) && has(y - 1) ? y : 0;
-      if (need) out.push({ key: "hol:" + need, t: need > y ? new Date(y, 10, 1).getTime() : new Date(y, 0, 1).getTime(), text: "Choose the paid holidays for " + need + ". Until you do, no holidays are added to time cards in " + need + ".", link: { v: "manage", tab: "settings", open: "hol", year: need } });
+      if (need) out.push({ key: "hol:" + need, t: need > y ? new Date(y, 10, 1).getTime() : new Date(y, 0, 1).getTime(), text: "Choose the paid holidays for " + need + ". Until you do, no holiday hours will be added in " + need + ".", link: { v: "manage", tab: "settings", open: "hol", year: need } });
     }
     if (now.getDay() === 4 || now.getDay() === 5) {
       const m0 = await weekMeta(thisWk);
-      if (!m0.locked) out.push({ key: "pay:" + thisWk, t: new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), text: "Payroll day: do payroll for " + weekLc(thisWk) + ".", link: { v: "manage", tab: "cards", wk: thisWk } });
+      if (!m0.locked) out.push({ key: "pay:" + thisWk, t: new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), text: "Payroll day: run payroll for " + weekLc(thisWk) + ".", link: { v: "manage", tab: "cards", wk: thisWk } });
     }
     for (const n of [0, -1, -2, -3]) {
       const wk = shiftWeek(thisWk, n); const meta = n < 0 ? await weekMeta(wk) : null;
       let anyHours = false;
       for (const e of hourly) {
         const w = await weekFor(e, wk); if (w.total > 0) anyHours = true;
-        if (w.otStatus === "pending" || w.otStatus === "changed") out.push({ key: "ot:" + e.id + ":" + wk + ":" + w.ot, t: fromKey(fridayOf(wk)).getTime(), text: fullName(e) + " has " + hrs(w.ot) + " h overtime for " + weekLc(wk) + ". It needs your approval.", link: { v: "empweek", id: e.id, wk } });
-        if (w.issues.length && n >= -1) out.push({ key: "miss:" + e.id + ":" + wk + ":" + w.issues.length, t: Date.now() - 1, text: fullName(e) + " has a missed punch (" + w.issues[0] + ").", link: { v: "empweek", id: e.id, wk } });
+        if (w.otStatus === "pending" || w.otStatus === "changed") out.push({ key: "ot:" + e.id + ":" + wk + ":" + w.ot, t: fromKey(fridayOf(wk)).getTime(), text: fullName(e) + " has " + hrs(w.ot) + " h of overtime for " + weekLc(wk) + " awaiting your approval.", link: { v: "empweek", id: e.id, wk } });
+        if (w.issues.length && n >= -1) out.push({ key: "miss:" + e.id + ":" + wk + ":" + w.issues.length, t: Date.now() - 1, text: fullName(e) + " has a missed punch on " + issueText(w.issues[0]) + ".", link: { v: "empweek", id: e.id, wk } });
       }
-      if (n < 0 && n >= -2 && anyHours && meta && !meta.locked) out.push({ key: "lock:" + wk, t: addDays(fromKey(wk), 7).getTime(), text: "Payroll for " + weekLc(wk) + " hasn't been done yet.", link: { v: "manage", tab: "cards", wk } });
+      if (n < 0 && n >= -2 && anyHours && meta && !meta.locked) out.push({ key: "lock:" + wk, t: addDays(fromKey(wk), 7).getTime(), text: "Payroll for " + weekLc(wk) + " hasn't been run yet.", link: { v: "manage", tab: "cards", wk } });
     }
   }
   if (emp.hourly !== false) {
     for (const n of [0, -1]) {
       const wk = shiftWeek(thisWk, n); const w = await weekFor(emp, wk); const meta = await weekMeta(wk);
-      if (w.issues.length) out.push({ key: "mymiss:" + wk + ":" + w.issues.length, t: Date.now() - 2, text: "You have a missed punch: " + w.issues[0] + ". Send a fix request.", link: { v: "me", wk } });
+      if (w.issues.length) out.push({ key: "mymiss:" + wk + ":" + w.issues.length, t: Date.now() - 2, text: "You have a missed punch on " + issueText(w.issues[0]) + ". Please submit a correction.", link: { v: "me", wk } });
       if (!((!meta.locked || paidEarly(meta, wk)) && w.total > 0 && !(w.signed && !w.changedAfterSign))) continue;
       const day = now.getDay(), today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-      if (n < 0) out.push({ key: "confirm:" + wk, t: fromKey(fridayOf(wk)).getTime(), text: "Please check and confirm your hours for " + weekLc(wk) + ".", link: { v: "me", wk } });
-      else if (day === 4) out.push({ key: "confirm:" + wk + ":thu", t: today0, text: "Payroll is done today at 5 PM. Please check and confirm your hours so far this week.", link: { v: "me", wk } });
-      else if (day === 5 || day === 6 || day === 0) out.push({ key: "confirm:" + wk + ":fri", t: today0, text: "Please check and confirm your hours for this week.", link: { v: "me", wk } });
+      if (n < 0) out.push({ key: "confirm:" + wk, t: fromKey(fridayOf(wk)).getTime(), text: "Please review and confirm your hours for " + weekLc(wk) + ".", link: { v: "me", wk } });
+      else if (day === 4) out.push({ key: "confirm:" + wk + ":thu", t: today0, text: "Payroll is processed today at 5 PM. Please review and confirm your hours so far this week.", link: { v: "me", wk } });
+      else if (day === 5 || day === 6 || day === 0) out.push({ key: "confirm:" + wk + ":fri", t: today0, text: "Please review and confirm your hours for this week.", link: { v: "me", wk } });
     }
   }
   return out;
@@ -1433,10 +1449,10 @@ async function refreshBell() {
 function drawBell() {
   const P = $("#bell-panel");
   P.innerHTML = '<div class="bp-head"><b>Notifications</b>' + (bellItems.some(x => !x.read) ? '<button class="btn btn-text mini" type="button" id="bp-all">Mark all read</button>' : "") + '</div>' +
-    (bellItems.length ? bellItems.map((x, i) => '<div class="note-item' + (x.read ? " read" : "") + '"><span class="ud"></span><div>' + (x.todo ? '<div class="task">To do</div>' : "") +
+    (bellItems.length ? bellItems.map((x, i) => '<div class="note-item' + (x.read ? " read" : "") + '"><span class="ud"></span><div>' + (x.todo ? '<div class="task">Action needed</div>' : "") +
       '<div class="nt">' + esc(x.text) + '</div><div class="nm">' + (x.t ? esc(fmtStamp(x.t)) : "") + '</div>' +
-      '<div class="na">' + (x.link ? '<button class="btn btn-primary mini" type="button" data-nopen="' + i + '">Go there</button>' : "") + (!x.read ? '<button class="btn btn-secondary mini" type="button" data-nread="' + i + '">Read</button>' : "") + '</div></div></div>').join("")
-      : '<div class="bp-empty">You\'re all caught up.</div>');
+      '<div class="na">' + (x.link ? '<button class="btn btn-primary mini" type="button" data-nopen="' + i + '">Open</button>' : "") + (!x.read ? '<button class="btn btn-secondary mini" type="button" data-nread="' + i + '">Mark read</button>' : "") + '</div></div></div>').join("")
+      : '<div class="bp-empty">No new notifications.</div>');
   $$("[data-nread]", P).forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); markRead([bellItems[+b.dataset.nread]]); }));
   $$("[data-nopen]", P).forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); const x = bellItems[+b.dataset.nopen]; markRead([x]); closeBell(); openLink(x.link); }));
   if ($("#bp-all")) $("#bp-all").addEventListener("click", (e) => { e.stopPropagation(); markRead(bellItems.filter(x => !x.read)); });
@@ -1476,7 +1492,7 @@ const touch = () => { S.last = Date.now(); };
 setInterval(() => {
   if (!S.emp) return;
   const limit = (S.emp.admin && !S.pin ? IDLE_ADMIN : IDLE_EMP) * 1000 * ($("#dlg").open ? 2 : 1);
-  if (Date.now() - S.last > limit) { signOut(); toast("Signed out after a few minutes of no activity."); }
+  if (Date.now() - S.last > limit) { signOut(); toast("Signed out due to inactivity."); }
 }, 5000);
 function signIn(emp) { S.emp = emp; touch(); paintBar(); refreshBell().catch(() => {}); }
 function signOut() { const t = S.tok; S.emp = null; S.tok = null; S.pin = false; Mirror.clear(); paintBar(); if (t) api("logout", { tok: t }).catch(() => {}); go("home"); }
@@ -1517,7 +1533,7 @@ function ask({ title, text, html, buttons, wide, onOpen }) {
   });
 }
 const alertBox = (title, text) => ask({ title, text, buttons: [{ label: "OK", value: true, kind: "btn-primary" }] });
-function showError(e) { console.error(e); return alertBox("That didn't work", (e && e.message) || String(e)); }
+function showError(e) { console.error(e); return alertBox("Something went wrong", (e && e.message) || String(e)); }
 let toastT = null;
 function toast(t, ms = 3500) { const el = $("#toast"); el.textContent = t; el.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { el.hidden = true; }, ms); }
 const backBtn = (label = "Back") => '<button class="btn btn-text no-print" type="button" id="back" style="justify-self:start">← ' + esc(label) + '</button>';
@@ -1525,8 +1541,8 @@ function catTag(c, extra) { return '<span class="tag ' + (CAT_TAG[c] || "") + '"
 function otTag(w) {
   if (w.otStatus === "none") return "";
   if (w.otStatus === "approved") return '<span class="tag ok">OT approved</span>';
-  if (w.otStatus === "changed") return '<span class="tag warn">OT changed since approved</span>';
-  return '<span class="tag warn">OT needs approval</span>';
+  if (w.otStatus === "changed") return '<span class="tag warn">OT changed after approval</span>';
+  return '<span class="tag warn">OT pending approval</span>';
 }
 
 /* ================================================================ navigation */
@@ -1550,13 +1566,13 @@ const joinLink = (code) => (MOCK && !inArtifact ? location.href.split("#")[0] : 
 function centerCard(inner) { view().innerHTML = '<div class="narrow" style="max-width:600px"><div class="card">' + inner + '</div></div>'; }
 function viewNotConnected(msg) {
   centerCard('<div class="card-head"><span class="section-title">Not connected yet</span><h2>This ' + (/iPhone|Android/.test(navigator.userAgent) ? "phone" : "computer") + ' isn\'t connected to the time clock</h2>' +
-    '<p class="muted">' + esc(msg || "To connect it, open your time clock invite email on this computer and click the link in it. Don't have one? Ask your manager to send you an invite.") + '</p></div>');
+    '<p class="muted">' + esc(msg || "To connect it, open your time clock invitation email on this device and select the link. If you don't have one, ask your manager to send an invitation.") + '</p></div>');
 }
 function viewPending() {
-  centerCard('<div class="card-head"><span class="section-title">Almost there</span><h2>Waiting for the manager to allow this computer</h2>' +
-    '<p class="muted">To keep time cards safe, each new computer has to be allowed once by the manager. They\'ll see it in their notifications. This page checks again on its own.</p></div>' +
+  centerCard('<div class="card-head"><span class="section-title">Approval pending</span><h2>Waiting for manager approval</h2>' +
+    '<p class="muted">For security, each new computer must be approved once by a manager. Your manager has been notified. This page updates automatically.</p></div>' +
     '<button class="btn btn-secondary" type="button" id="again">Check now</button>');
-  const check = async () => { try { const h = await api("hello"); if (h.device && h.device.status === "allowed") return enterApp(); if (h.device && h.device.status === "denied") viewNotConnected("The manager didn't allow this computer. If that's a mistake, ask them to allow it in Team."); } catch (_) {} };
+  const check = async () => { try { const h = await api("hello"); if (h.device && h.device.status === "allowed") return enterApp(); if (h.device && h.device.status === "denied") viewNotConnected("A manager declined this computer. If this is a mistake, ask your manager to approve it from the Team page."); } catch (_) {} };
   $("#again").addEventListener("click", check);
   pollT = setInterval(check, 15000);
 }
@@ -1570,13 +1586,13 @@ function viewOwner() {
     '<p class="err" id="serr"></p><button class="btn btn-primary btn-lg btn-block" type="button" id="sgo">Connect</button>');
   $("#copycode").addEventListener("click", async () => {
     try { const t = await (await fetch("Code.gs.txt", { cache: "no-store" })).text(); await navigator.clipboard.writeText(t); toast("Copied. Paste it into the Apps Script editor."); }
-    catch (_) { toast("Couldn't copy here. Tap Open it instead, then select all and copy."); }
+    catch (_) { toast("Couldn't copy automatically. Select Open it instead, then select all and copy."); }
   });
   $("#sgo").addEventListener("click", async () => {
     const url = $("#surl").value.trim();
-    if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(url)) { $("#serr").textContent = "That doesn't look like the Web app address. It starts with https://script.google.com/macros/s/ and ends with /exec."; return; }
+    if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(url)) { $("#serr").textContent = "That isn't a valid Web app address. It starts with https://script.google.com/macros/s/ and ends with /exec."; return; }
     Conn.url = url; delete Conn.dev; saveConn();
-    try { const h = await api("hello"); if (!h || !h.version) throw new Error(); } catch (e) { $("#serr").textContent = "Couldn't reach the server at that address. Check that it was deployed as a Web app with access for Anyone. (" + (e.message || "no answer") + ")"; return; }
+    try { const h = await api("hello"); if (!h || !h.version) throw new Error(); } catch (e) { $("#serr").textContent = "Couldn't reach the server at that address. Make sure it was deployed as a Web app with access set to Anyone. (" + (e.message || "no answer") + ")"; return; }
     viewOwnerSetup();
   });
 }
@@ -1588,7 +1604,7 @@ async function viewOwnerSetup() {
     centerCard('<div class="card-head"><span class="section-title">Server connected</span><h2>Send this link to the manager</h2>' +
       '<p class="muted">The manager opens it on their office computer to make the manager account and finish setup. It works once.</p></div>' +
       '<div class="field"><label for="ml">Manager link</label><input type="text" id="ml" readonly value="' + esc(link) + '"></div>' +
-      '<div class="row"><button class="btn btn-primary" type="button" id="share">Share or copy</button><a class="btn btn-secondary" href="mailto:?subject=' + encodeURIComponent("Masterpiece Time Clock: your manager link") + '&body=' + encodeURIComponent("Open this link on your office computer to set up the time clock:\n\n" + link) + '">Email it</a></div>');
+      '<div class="row"><button class="btn btn-primary" type="button" id="share">Share or copy</button><a class="btn btn-secondary" href="mailto:?subject=' + encodeURIComponent("Masterpiece Time Clock: manager setup link") + '&body=' + encodeURIComponent("Open this link on your office computer to set up the time clock:\n\n" + link) + '">Email it</a></div>');
     $("#share").addEventListener("click", async () => { try { if (navigator.share) await navigator.share({ title: "Masterpiece Time Clock", url: link }); else { await navigator.clipboard.writeText(link); toast("Copied."); } } catch (_) {} });
   } catch (e) { centerCard('<h2>Setup</h2><p class="muted">' + esc(e.message) + '</p>'); }
 }
@@ -1602,26 +1618,26 @@ async function viewJoin(code) {
   const inv = r.invite;
   if (inv.used || inv.role === "device") return r.status === "allowed" ? enterApp() : viewPending();
   if (inv.role === "manager") return viewCreateManager(code);
-  centerCard('<div class="card-head"><span class="section-title">Welcome to Masterpiece</span><h2>Make your time clock account</h2>' +
-    '<p class="muted">' + (inv.phone ? "You'll clock in and out on this phone. " : "") + 'Your name shows on the time clock. Your password keeps your time card private.</p></div>' +
+  centerCard('<div class="card-head"><span class="section-title">Welcome to Masterpiece</span><h2>Create your time clock account</h2>' +
+    '<p class="muted">' + (inv.phone ? "You'll clock in and out on this phone. " : "") + 'Your name appears on the time clock. Your PIN keeps your time card private.</p></div>' +
     '<div class="grid2"><div class="field"><label for="n-first">First name</label><input type="text" id="n-first" autocomplete="given-name" value="' + esc((inv.name || "").split(" ")[0] || "") + '"></div>' +
     '<div class="field"><label for="n-last">Last name</label><input type="text" id="n-last" autocomplete="family-name" value="' + esc((inv.name || "").split(" ").slice(1).join(" ")) + '"></div></div>' +
     '<div class="field"><label for="n-pos">Position</label><input type="text" id="n-pos" autocomplete="off"></div>' +
-    '<div class="grid2">' + pinField("n-pin", "6-digit PIN") + pinField("n-pin2", "Type it again") + '</div>' + pinHint +
-    '<p class="err" id="n-err"></p><button class="btn btn-primary btn-lg btn-block" type="button" id="n-go">Make my account</button>');
+    '<div class="grid2">' + pinField("n-pin", "6-digit PIN") + pinField("n-pin2", "Confirm PIN") + '</div>' + pinHint +
+    '<p class="err" id="n-err"></p><button class="btn btn-primary btn-lg btn-block" type="button" id="n-go">Create account</button>');
   $("#n-go").addEventListener("click", async () => {
     const first = $("#n-first").value.trim(), last = $("#n-last").value.trim(), position = $("#n-pos").value.trim();
-    const err = !first || !last ? "Type your first and last name." : !position ? "Type your position." : pinProblem($("#n-pin").value, $("#n-pin2").value);
+    const err = !first || !last ? "Enter your first and last name." : !position ? "Enter your position." : pinProblem($("#n-pin").value, $("#n-pin2").value);
     if (err) { $("#n-err").textContent = err; return; }
     const btn = $("#n-go"); btn.disabled = true;
     try {
       const made = await api("createAccount", { code, first, last, position, pin: $("#n-pin").value });
       const h = await api("hello");
-      if (h.device.status !== "allowed") { toast("Your account is ready."); return viewPending(); }
+      if (h.device.status !== "allowed") { toast("Your account has been created."); return viewPending(); }
       await signInWith(made.emp.id, null, $("#n-pin").value);
       await logChange("New account: " + first + " " + last + " (" + position + ")");
-      await notifyManagers("New account made: " + first + " " + last + " (" + position + "). If you don't know this person, mark them inactive in Team.", { v: "manage", tab: "team" });
-      toast("Welcome, " + first + "! Your account is ready."); go("me");
+      await notifyManagers("New account created: " + first + " " + last + " (" + position + "). If you don't recognize this person, mark them inactive on the Team page.", { v: "manage", tab: "team" });
+      toast("Welcome, " + first + ". Your account is ready."); go("me");
     } catch (e) { btn.disabled = false; $("#n-err").textContent = e.message; }
   });
 }
@@ -1648,8 +1664,8 @@ function suggestedHolidays(y) {
     { key: "nye", name: "New Year's Eve", date: observed(new Date(y, 11, 31)), on: false },
   ].map(h => Object.assign(h, { date: dayKey(h.date) }));
 }
-function holidayChecklist(y, existing = []) {
-  return '<div class="hol-list" data-year="' + y + '">' + suggestedHolidays(y).map(h => {
+function holidayChecklist(y, existing = [], from = "") {
+  return '<div class="hol-list" data-year="' + y + '">' + suggestedHolidays(y).filter(h => h.date >= from).map(h => {
     const have = existing.some(x => x.date === h.date);
     return '<label class="check"><input type="checkbox" data-hol="' + h.key + '"' + ((have || (!existing.length && h.on)) ? " checked" : "") + (have ? " disabled" : "") + '><span><b>' + esc(h.name) + '</b><span class="hint">' + esc(fmtLong(h.date)) + (have ? " · already added" : "") + '</span></span></label>';
   }).join("") + '</div>';
@@ -1659,38 +1675,38 @@ function readChecklist(box, hours) {
   return $$("input[data-hol]:checked:not(:disabled)", box).map(i => { const h = S0.find(x => x.key === i.dataset.hol); return { id: uid(), date: h.date, name: h.name, hours }; });
 }
 function viewCreateManager(code) {
-  const y = new Date().getFullYear();
+  const y = new Date().getFullYear(), late = new Date().getMonth() >= 10;   // from November, next year's holidays are offered too
   centerCard('<div class="card-head"><span class="section-title">One-time setup</span><h2>Set up the time clock</h2>' +
-    '<p class="muted">First, the manager account. The manager approves time off and overtime, fixes time cards, invites employees and allows office computers.</p></div>' +
+    '<p class="muted">Start by creating the manager account. Managers approve time off and overtime, correct time cards, invite employees and approve office computers.</p></div>' +
     '<div class="grid2"><div class="field"><label for="m-first">First name</label><input type="text" id="m-first" autocomplete="off"></div>' +
     '<div class="field"><label for="m-last">Last name</label><input type="text" id="m-last" autocomplete="off"></div></div>' +
     '<div class="field"><label for="m-pos">Position</label><input type="text" id="m-pos" placeholder="Office Manager" autocomplete="off"></div>' +
-    '<label class="check"><input type="checkbox" id="m-hourly" checked><span><b>I\'m hourly too</b><span class="hint">Show me on the time clock so I can clock in and out.</span></span></label>' +
+    '<label class="check"><input type="checkbox" id="m-hourly" checked><span><b>I clock in and out</b><span class="hint">Include me on the time clock as an hourly employee.</span></span></label>' +
     '<div class="grid2"><div class="field"><label for="m-pw">Password</label><input type="password" id="m-pw" autocomplete="new-password"></div>' +
-    '<div class="field"><label for="m-pw2">Type it again</label><input type="password" id="m-pw2" autocomplete="new-password"></div></div>' + pwHint +
-    '<div class="grid2">' + pinField("m-pin", "6-digit PIN") + pinField("m-pin2", "Type it again") + '</div>' + pinHint +
+    '<div class="field"><label for="m-pw2">Confirm password</label><input type="password" id="m-pw2" autocomplete="new-password"></div></div>' + pwHint +
+    '<div class="grid2">' + pinField("m-pin", "6-digit PIN") + pinField("m-pin2", "Confirm PIN") + '</div>' + pinHint +
     '<div class="sep"></div>' +
-    '<div class="card-head"><h3>Paid holidays for ' + y + '</h3><p class="muted">Holidays add hours to everyone\'s time card automatically. Uncheck any the company doesn\'t give. You can change these anytime in Settings.</p></div>' +
+    '<div class="card-head"><h3>Paid holidays</h3><p class="muted">Holiday hours are added to every hourly employee\'s time card automatically. Clear any the company doesn\'t observe. You can change these at any time in Settings.</p></div>' +
     '<div class="field" style="max-width:220px"><label for="m-holh">Hours for each holiday</label><input type="number" id="m-holh" value="8" min="0" max="24" step="0.25"></div>' +
-    holidayChecklist(y) +
+    (late ? '<h4 class="hol-yr">' + y + '</h4>' : "") + holidayChecklist(y, [], dayKey(new Date())) + (late ? '<h4 class="hol-yr">' + (y + 1) + '</h4>' + holidayChecklist(y + 1) : "") +
     '<p class="err" id="m-err"></p>' +
     '<button class="btn btn-primary btn-lg btn-block" type="button" id="m-go">Finish setup</button>');
   $("#m-go").addEventListener("click", async () => {
     const first = $("#m-first").value.trim(), last = $("#m-last").value.trim(), pos = $("#m-pos").value.trim();
     const pw = $("#m-pw").value, pw2 = $("#m-pw2").value;
-    const err = !first || !last ? "Type your first and last name." : pwProblem(pw, pw2) || pinProblem($("#m-pin").value, $("#m-pin2").value);
+    const err = !first || !last ? "Enter your first and last name." : pwProblem(pw, pw2) || pinProblem($("#m-pin").value, $("#m-pin2").value);
     if (err) { $("#m-err").textContent = err; return; }
     const btn = $("#m-go"); btn.disabled = true;
     try {
       const rc = newCode();
       const made = await api("createAccount", { code, first, last, position: pos || "Office Manager", hourly: $("#m-hourly").checked, password: pw, pin: $("#m-pin").value, recovery: rc,
-        settings: { holidays: readChecklist($(".hol-list"), Number($("#m-holh").value) || 8) } });
+        settings: { holidays: $$(".hol-list").flatMap(b => readChecklist(b, Number($("#m-holh").value) || 8)) } });
       await signInWith(made.emp.id, pw);
-      await logChange("Set up the time clock");
-      await ask({ title: "Write down this recovery code", html: '<p class="muted">If the manager password is ever forgotten, this code resets it. Keep it somewhere safe, away from the computer.</p><div class="code">' + rc + '</div>',
-        buttons: [{ label: "I wrote it down", value: true, kind: "btn-primary" }] });
+      await logChange("Completed time clock setup");
+      await ask({ title: "Save your recovery code", html: '<p class="muted">If the manager password is forgotten, this code resets it. Write it down or take a photo and store it somewhere safe, away from this computer.</p><div class="code">' + rc + '</div>',
+        buttons: [{ label: "I've saved it", value: true, kind: "btn-primary" }] });
       go("manage", { tab: "team" });
-      toast("Next: invite your employees.", 5000);
+      toast("Setup complete. Next, invite your employees.", 5000);
     } catch (e) { btn.disabled = false; $("#m-err").textContent = e.message; }
   });
 }
@@ -1702,7 +1718,7 @@ async function enterApp() {
   if (!h.device) { delete Conn.dev; saveConn(); return viewNotConnected(); }
   D.serverVersion = h.version || 1;
   if (h.device.status === "pending") return viewPending();
-  if (h.device.status === "denied") return viewNotConnected("The manager didn't allow this computer. If that's a mistake, ask them to allow it in Team.");
+  if (h.device.status === "denied") return viewNotConnected("A manager declined this computer. If this is a mistake, ask your manager to approve it from the Team page.");
   go("home");
 }
 
@@ -1717,8 +1733,8 @@ async function viewHome() {
     if (!!b.device.phone !== !!Conn.phone) { Conn.phone = !!b.device.phone; saveConn(); }
     if (b.device.phone && b.people.length === 1) return go("signin", { id: b.people[0].id, phone: true });
     const now = new Date();
-    view().innerHTML = (D.serverVersion && D.serverVersion < 2 ? '<div class="note warn" style="margin-bottom:14px"><b>The time clock server needs its update</b><span>PIN sign-in and the Thursday payroll email won\'t work until the owner pastes the new server code into Apps Script and deploys a new version (Deploy → Manage deployments → Edit → New version).</span></div>' : "") + '<div class="now"><div class="now-time" id="now-time">' + fmtTime(now) + '</div><div class="now-date">' + esc(fmtLong(dayKey(now))) + '</div></div>' +
-      (b.people.length ? '<div class="card-head" style="text-align:center"><h3>Tap your name to clock in or out</h3></div>' : '<div class="empty"><b>No one here yet</b><span class="muted">The manager invites employees from Team.</span></div>') +
+    view().innerHTML = (D.serverVersion && D.serverVersion < 2 ? '<div class="note warn" style="margin-bottom:14px"><b>Server update required</b><span>PIN sign-in and the Thursday payroll email won\'t work until the owner updates the server code in Apps Script and deploys a new version (Deploy → Manage deployments → Edit → New version).</span></div>' : "") + '<div class="now"><div class="now-time" id="now-time">' + fmtTime(now) + '</div><div class="now-date">' + esc(fmtLong(dayKey(now))) + '</div></div>' +
+      (b.people.length ? '<div class="card-head" style="text-align:center"><h3>Select your name to clock in or out</h3></div>' : '<div class="empty"><b>No employees yet</b><span class="muted">Managers can invite employees from the Team page.</span></div>') +
       '<div class="tiles">' + b.people.map(e => {
         const chip = !e.hourly ? '<span class="chip out">Manager</span>' : e.inSince ? '<span class="chip in">In since ' + fmtTime(e.inSince) + '</span>' : '<span class="chip out">Out</span>';
         return '<button class="tile" type="button" data-emp="' + e.id + '"' + (e.unread ? ' title="New notifications"' : "") + '><div class="who"><span class="avatar">' + esc(initials(e)) + '</span>' + (e.unread ? '<span class="newdot"></span>' : "") + '<div><div class="nm">' + esc(fullName(e)) + '</div><div class="pos">' + esc(e.position || "") + '</div></div></div>' + chip + '</button>';
@@ -1752,10 +1768,10 @@ async function viewSignIn({ id, phone, pw, why }) {
       ? pinField("pin", "Your 6-digit PIN") + '<p class="err" id="err"></p>' +
         '<button class="btn btn-primary btn-lg btn-block" type="button" id="go">Continue</button>' +
         (emp.admin ? '<button class="btn btn-text" type="button" id="usepw">Use my password instead</button>' +
-          '<p class="hint" style="text-align:center">Your PIN clocks you in and out. Use your password for the manager pages, time off and changes.</p>'
+          '<p class="hint" style="text-align:center">Use your PIN to clock in and out. Use your password for the manager pages.</p>'
           : '<button class="btn btn-text" type="button" id="forgotpin">Forgot your PIN?</button>')
       : '<div class="field"><label for="pw">Password</label><input type="password" id="pw" autocomplete="current-password"></div>' +
-        (emp.hourly !== false && !emp.hasPin ? '<p class="hint">After you sign in, you\'ll make a 6-digit PIN so clocking in and out is quicker.</p>' : "") +
+        (emp.hourly !== false && !emp.hasPin ? '<p class="hint">After you sign in, you\'ll create a 6-digit PIN for clocking in and out.</p>' : "") +
         '<p class="err" id="err"></p>' +
         '<button class="btn btn-primary btn-lg btn-block" type="button" id="go">Sign in</button>' +
         '<button class="btn btn-text" type="button" id="forgot">Forgot your password?</button>' +
@@ -1779,18 +1795,18 @@ async function viewSignIn({ id, phone, pw, why }) {
   box.addEventListener("keydown", (e) => { if (e.key === "Enter") tryIt(); });
   if (usePin) box.addEventListener("input", () => { box.value = box.value.replace(/[^0-9]/g, "").slice(0, 6); if (box.value.length === 6) tryIt(); });
   if ($("#usepw")) $("#usepw").addEventListener("click", () => go("signin", { id, phone, pw: true }));
-  if ($("#forgotpin")) $("#forgotpin").addEventListener("click", () => alertBox("Forgot your PIN?", "Your manager can give you a temporary PIN from the Team page. You'll pick a new one the next time you sign in."));
+  if ($("#forgotpin")) $("#forgotpin").addEventListener("click", () => alertBox("Forgot your PIN?", "Ask your manager for a temporary PIN. You'll choose a new PIN the next time you sign in."));
   if ($("#usepin")) $("#usepin").addEventListener("click", () => go("signin", { id, phone }));
   if ($("#forgot")) $("#forgot").addEventListener("click", async () => {
-    if (!emp.admin) return alertBox("Forgot your password?", "Your manager can reset it for you in Team. You'll pick a new password the next time you sign in.");
-    const v = await ask({ title: "Reset with the recovery code", html: '<p class="muted">Type the recovery code you wrote down at setup, then choose a new password. (Another manager can also reset it for you in Team.)</p>' +
+    if (!emp.admin) return alertBox("Forgot your password?", "Ask another manager to reset it from the Team page. You'll choose a new password the next time you sign in.");
+    const v = await ask({ title: "Reset with the recovery code", html: '<p class="muted">Enter the recovery code you saved during setup, then choose a new password. Another manager can also reset your password from the Team page.</p>' +
       '<div class="field"><label for="rc">Recovery code</label><input type="text" id="rc" autocomplete="off" placeholder="XXXX-XXXX-XXXX"></div>' +
-      '<div class="grid2"><div class="field"><label for="np">New password</label><input type="password" id="np"></div><div class="field"><label for="np2">Type it again</label><input type="password" id="np2"></div></div>' + pwHint + '<p class="err" id="rerr"></p>',
+      '<div class="grid2"><div class="field"><label for="np">New password</label><input type="password" id="np"></div><div class="field"><label for="np2">Confirm new password</label><input type="password" id="np2"></div></div>' + pwHint + '<p class="err" id="rerr"></p>',
       buttons: [{ label: "Cancel", value: false }, { label: "Reset password", value: true, kind: "btn-primary", check: async () => {
         const p = pwProblem($("#np").value, $("#np2").value); if (p) { $("#rerr").textContent = p; return false; }
         try { await api("recover", { emp: emp.id, code: $("#rc").value, password: $("#np").value }); return true; } catch (e) { $("#rerr").textContent = e.message; return false; }
       } }] });
-    if (v) toast("Password reset. Sign in with the new one.");
+    if (v) toast("Password reset. Sign in with your new password.");
   });
 }
 /* from a PIN sign-in to the password (for requests and settings) */
@@ -1801,18 +1817,18 @@ function needPassword(why) {
 /* mode: "first" (can wait), "temp" (must replace a temporary PIN), "change" (from My Time) */
 async function makePin(mode) {
   const needOld = mode === "change" && !S.emp.admin;
-  return ask({ title: mode === "change" ? "Change your PIN" : mode === "temp" ? "Pick your own PIN" : "Make your 6-digit PIN",
-    html: (mode === "first" ? '<p class="muted">You\'ll use it to clock in and out, instead of typing your password each time. Keep it to yourself.</p>' : mode === "temp" ? '<p class="muted">You signed in with a temporary PIN. Pick your own now, and keep it to yourself.</p>' : "") +
-    (needOld ? pinField("op", "Current PIN") : "") + '<div class="grid2">' + pinField("np", "New PIN") + pinField("np2", "Type it again") + '</div>' + pinHint + '<p class="err" id="perr"></p>',
+  return ask({ title: mode === "change" ? "Change your PIN" : mode === "temp" ? "Choose a new PIN" : "Create your 6-digit PIN",
+    html: (mode === "first" ? '<p class="muted">You\'ll use it to clock in and out instead of your password. Don\'t share it with anyone.</p>' : mode === "temp" ? '<p class="muted">You signed in with a temporary PIN. Choose your own PIN now. Don\'t share it with anyone.</p>' : "") +
+    (needOld ? pinField("op", "Current PIN") : "") + '<div class="grid2">' + pinField("np", "New PIN") + pinField("np2", "Confirm new PIN") + '</div>' + pinHint + '<p class="err" id="perr"></p>',
     buttons: (mode === "temp" ? [] : [{ label: mode === "first" ? "Later" : "Cancel", value: false }]).concat([{ label: "Save PIN", value: true, kind: "btn-primary", check: async () => {
       const p = pinProblem($("#np").value, $("#np2").value); if (p) { $("#perr").textContent = p; return false; }
       try { await api("setPin", { pin: $("#np").value, old: needOld ? $("#op").value : undefined }); return true; } catch (e) { $("#perr").textContent = e.message; return false; }
-    } }]) }).then(v => { if (v) toast("PIN saved. Use it next time you sign in."); return v; });
+    } }]) }).then(v => { if (v) toast("PIN saved."); return v; });
 }
 async function changePassword(forced) {
-  return ask({ title: forced ? "Choose a new password" : "Change your password", html: (forced ? '<p class="muted">Your password was reset. Choose a new one that only you know.</p>' : "") +
+  return ask({ title: forced ? "Choose a new password" : "Change your password", html: (forced ? '<p class="muted">Your password was reset. Choose a new password that only you know.</p>' : "") +
     (forced ? "" : '<div class="field"><label for="op">Current password</label><input type="password" id="op"></div>') +
-    '<div class="grid2"><div class="field"><label for="np">New password</label><input type="password" id="np"></div><div class="field"><label for="np2">Type it again</label><input type="password" id="np2"></div></div>' + pwHint + '<p class="err" id="perr"></p>',
+    '<div class="grid2"><div class="field"><label for="np">New password</label><input type="password" id="np"></div><div class="field"><label for="np2">Confirm new password</label><input type="password" id="np2"></div></div>' + pwHint + '<p class="err" id="perr"></p>',
     buttons: (forced ? [] : [{ label: "Cancel", value: false }]).concat([{ label: "Save password", value: true, kind: "btn-primary", check: async () => {
       const p = pwProblem($("#np").value, $("#np2").value); if (p) { $("#perr").textContent = p; return false; }
       try { await api("changePassword", { old: forced ? "" : $("#op").value, password: $("#np").value }); return true; } catch (e) { $("#perr").textContent = e.message; return false; }
@@ -1825,10 +1841,10 @@ function weekTable(w, { admin = false } = {}) {
     const wkend = i >= 5;
     if (wkend && !d.pairs.length && !d.entries.length && !admin) return "";
     const pairs = d.pairs.map(p => {
-      const a = p.in ? fmtTime(p.in.at) : "—", b = p.out ? fmtTime(p.out.at) : p.live ? "now" : "—";
-      const how = (p.in && p.in.how !== "clock") || (p.out && p.out.how !== "clock") ? ' <span class="tag" title="Entered by hand or from a request, not with the clock button">added</span>' : "";
+      const a = p.in ? fmtTime(p.in.at) : "no clock-in", b = p.out ? fmtTime(p.out.at) : p.live ? "now" : "no clock-out";
+      const how = (p.in && p.in.how !== "clock") || (p.out && p.out.how !== "clock") ? ' <span class="tag" title="Entered by a manager or from an approved request, not with the clock button">Manual entry</span>' : "";
       const ed = admin ? locBit(p.in) + locBit(p.out) : "";
-      return '<span class="pair' + (p.live ? " open" : p.bad ? " bad" : "") + '">' + a + ' – ' + b + (p.bad ? " (" + esc(p.bad) + ")" : "") + '</span>' + how + ed;
+      return '<span class="pair' + (p.live ? " open" : p.bad ? " bad" : "") + '">' + a + ' – ' + b + "" + '</span>' + how + ed;
     }).join("");
     const ents = d.entries.map(x => catTag(x.cat, hrs(x.hours) + " h") + (x.note ? ' <span class="hint">' + esc(x.note) + '</span>' : "") +
       "").join(" ");
@@ -1843,9 +1859,9 @@ function weekTable(w, { admin = false } = {}) {
 function locBit(pt) {
   if (!pt || !pt.phone) return "";
   const lbl = pt.dir === "in" ? "in" : "out";
-  if (pt.loc && pt.loc.lat != null) return ' <a class="loc" href="https://maps.google.com/?q=' + pt.loc.lat + "," + pt.loc.lng + '" target="_blank" rel="noopener" title="Where the phone was when clocking ' + lbl + ' (within about ' + (pt.loc.acc || "?") + ' m)">📍 ' + lbl + ' location</a>';
+  if (pt.loc && pt.loc.lat != null) return ' <a class="loc" href="https://maps.google.com/?q=' + pt.loc.lat + "," + pt.loc.lng + '" target="_blank" rel="noopener" title="Where the phone was when clocking ' + lbl + ' (within about ' + (pt.loc.acc || "?") + ' m)">' + PIN_ICON + 'Clock-' + lbl + ' location</a>';
   const why = { denied: "location turned off for this site", timeout: "the phone took too long", unavailable: "the phone couldn't tell", unsupported: "the phone can't share it" }[(pt.loc && pt.loc.err) || ""] || "not shared";
-  return ' <span class="tag warn" title="Clocked ' + lbl + ' on a phone, but no location: ' + esc(why) + '">no ' + lbl + ' location</span>';
+  return ' <span class="tag warn" title="Clocked ' + lbl + ' on a phone, but no location: ' + esc(why) + '">No clock-' + lbl + ' location</span>';
 }
 function statsBlock(w, bal) {
   const s = (l, v, hi, em) => '<div class="stat' + (hi ? " hi" : "") + '"><span>' + l + '</span><b>' + v + '</b>' + (em || "") + '</div>';
@@ -1853,8 +1869,8 @@ function statsBlock(w, bal) {
   const offBits = [w.pto ? "PTO " + hrs(w.pto) : "", w.sick ? "Sick " + hrs(w.sick) : "", w.holiday ? "Holiday " + hrs(w.holiday) : ""].filter(Boolean).join(" · ");
   return '<div class="stats">' + s("Hours worked", hrs(w.worked), false) +
     (w.ot ? s("Overtime", hrs(w.ot), false, '<em style="color:var(--' + (w.otStatus === "approved" ? "good" : "warn") + ')">' + (w.otStatus === "approved" ? "Approved" : "Needs approval") + '</em>') : "") +
-    (off ? s("Time off & holidays", hrs(off), false, '<em class="hint">' + esc(offBits) + '</em>') : "") + s("Total paid", hrs(w.total), true) + '</div>' +
-    (bal ? '<p class="hint">Time off left: <b>' + hrs(bal.pto) + ' h PTO</b> · <b>' + hrs(bal.sick) + ' h sick leave</b></p>' : "");
+    (off ? s("Time off and holidays", hrs(off), false, '<em class="hint">' + esc(offBits) + '</em>') : "") + s("Total paid", hrs(w.total), true) + '</div>' +
+    (bal ? '<p class="hint">Available balance: <b>PTO ' + hrs(bal.pto) + ' h</b> · <b>Sick leave ' + hrs(bal.sick) + ' h</b></p>' : "");
 }
 async function viewMe(opts = {}) {
   if (!S.emp) return go("home");
@@ -1873,16 +1889,16 @@ async function viewMe(opts = {}) {
   const due = cur && canConfirm && !confirmed;
   view().innerHTML = navBar("me") +
     (cur ? '<div class="card clock-card"><div><h2>Hi, ' + esc(emp.first) + '</h2><p class="state">' +
-      (isIn ? 'You\'re <b>clocked in</b> since ' + fmtTime(w.clockedIn.at) + '.' : 'You\'re <b>clocked out</b>.') + '</p></div>' +
+      (isIn ? 'Clocked in since <b>' + fmtTime(w.clockedIn.at) + '</b>' : 'You\'re <b>clocked out</b>') + '</p></div>' +
       '<button class="bigbtn ' + (isIn ? "out" : "in") + '" type="button" id="punch">' + (isIn ? "Clock out" : "Clock in") + '</button>' +
-      (Conn.phone ? '<p class="hint" style="flex-basis:100%">Your location is saved each time you clock in or out on this phone.</p>' : "") + '</div>' : "") +
-    (due ? '<div class="note warn"><b>Please confirm your hours</b><span>' + (now.getDay() === 4 ? "Payroll is done today at 5 PM. Check your hours so far this week, then confirm them." : "Check this week's hours, then confirm them.") + '</span><div class="row" style="margin-top:8px"><button class="btn btn-primary mini" type="button" id="confirm-top">Confirm my hours</button></div></div>' : "") +
-    (w.issues.length ? '<div class="note warn"><b>Missed punch</b><span>' + w.issues.map(esc).join("<br>") + '</span><div class="row" style="margin-top:8px"><button class="btn btn-primary mini" type="button" id="fix-now">Fix it</button></div></div>' : "") +
-    '<div class="card"><div class="wk-nav"><button class="navbtn" id="prev" aria-label="Previous week">‹</button><div><div class="lbl">' + esc(weekLabel(wk)) + '</div><div class="sub">' + esc(weekRange(wk)) + (meta.locked ? (open ? " · Sent to payroll" : " · Paid") : "") + '</div></div>' +
+      (Conn.phone ? '<p class="hint" style="flex-basis:100%">Your location is recorded each time you clock in or out on this phone.</p>' : "") + '</div>' : "") +
+    (due ? '<div class="note warn"><b>Please confirm your hours</b><span>' + (now.getDay() === 4 ? "Payroll is processed today at 5 PM. Review your hours so far this week, then confirm them." : "Review this week's hours, then confirm them.") + '</span><div class="row" style="margin-top:8px"><button class="btn btn-primary mini" type="button" id="confirm-top">Confirm my hours</button></div></div>' : "") +
+    (w.issues.length ? '<div class="note warn"><b>Missed punch</b><span>' + w.issues.map(x => esc(issueText(x))).join("<br>") + '</span><div class="row" style="margin-top:8px"><button class="btn btn-primary mini" type="button" id="fix-now">Request a correction</button></div></div>' : "") +
+    '<div class="card"><div class="wk-nav"><button class="navbtn" id="prev" aria-label="Previous week">‹</button><div><div class="lbl">' + esc(weekLabel(wk)) + '</div><div class="sub">' + esc(weekRange(wk)) + (meta.locked ? (open ? " · Submitted to payroll" : " · Paid") : "") + '</div></div>' +
     '<button class="navbtn" id="next" aria-label="Next week"' + (cur ? " disabled" : "") + '>›</button></div>' +
     statsBlock(w, bal) + weekTable(w) +
-    '<div class="row no-print">' + (open ? '<button class="btn btn-secondary" type="button" id="ask">Request time off or a fix</button>' : "") +
-    (confirmed ? '<span class="tag ok">You confirmed these hours</span>' : canConfirm ? '<button class="btn btn-primary" type="button" id="confirm">Confirm my hours</button>' : "") + '</div></div>' +
+    '<div class="row no-print">' + (open ? '<button class="btn btn-secondary" type="button" id="ask">New request</button>' : "") +
+    (confirmed ? '<span class="tag ok">Hours confirmed</span>' : canConfirm ? '<button class="btn btn-primary" type="button" id="confirm">Confirm my hours</button>' : "") + '</div></div>' +
     (mine.length ? '<div class="card"><div class="card-head"><h3>My requests</h3></div><div class="list">' + mine.map(reqRow).join("") + '</div></div>' : "") +
     (pinMode ? "" : '<div class="row no-print">' + (emp.admin ? '<button class="btn btn-text" type="button" id="chpw">Change my password</button>' : "") + '<button class="btn btn-text" type="button" id="chpin">Change my PIN</button></div>');
   wireNav();
@@ -1891,14 +1907,14 @@ async function viewMe(opts = {}) {
     try {
       const dir = isIn ? "out" : "in";
       const ev = { type: "punch", dir, at: Date.now(), how: "clock" };
-      if (Conn.phone) { b.textContent = "Getting your location…"; ev.loc = await getLoc(); }   // logged only; never stops the punch
+      if (Conn.phone) { b.textContent = "Getting location…"; ev.loc = await getLoc(); }   // logged only; never stops the punch
       const id = await addEvent(weekOf(Date.now()), emp.id, ev);
       const wNow = await weekFor(emp, weekOf(Date.now()));
       const p = wNow.punches.find(x => x.id === id), t = p ? p.at : Date.now();
       const over = dir === "out" && wNow.ot > 0, leave = !emp.admin || S.pin;
       const day = new Date().getDay();
       const ask2 = dir === "out" && (day === 4 || day === 5) && wNow.total > 0 && !(wNow.signed && !wNow.changedAfterSign);
-      toast((dir === "in" ? "Clocked in at " : "Clocked out at ") + fmtTime(t) + "." + (over ? " You're over 40 hours this week, so the overtime goes to the manager to approve." : "") + (leave && !ask2 ? " Signing you out…" : ""), over ? 6000 : 3500);
+      toast((dir === "in" ? "Clocked in at " : "Clocked out at ") + fmtTime(t) + "." + (over ? " You're over 40 hours this week. Overtime requires manager approval." : "") + (leave && !ask2 ? " Signing out…" : ""), over ? 6000 : 3500);
       if (ask2) { await confirmHours(wNow, true); if (leave) return signOut(); return go("me"); }
       if (leave) { const tok = S.tok; setTimeout(() => { if (S.tok === tok && S.emp && S.emp.id === emp.id && current.name === "me") signOut(); }, over ? 5000 : 2500); }
       go("me");
@@ -1906,11 +1922,11 @@ async function viewMe(opts = {}) {
   });
   $("#prev").addEventListener("click", () => go("me", { wk: shiftWeek(wk, -1) }));
   $("#next").addEventListener("click", () => go("me", { wk: shiftWeek(wk, 1) }));
-  if ($("#fix-now")) $("#fix-now").addEventListener("click", () => pinMode ? needPassword("To fix a missed punch, sign in with your password.") : requestFix(emp, wk));
+  if ($("#fix-now")) $("#fix-now").addEventListener("click", () => pinMode ? needPassword("Sign in with your password to request a correction.") : requestFix(emp, wk));
   if ($("#ask")) $("#ask").addEventListener("click", async () => {
-    if (pinMode) return needPassword("To ask for time off or fix a punch, sign in with your password.");
-    const v = await ask({ title: "What do you need?", html: '<div class="list"><button class="choice" type="button" data-c="off"><b>Time off or sick leave</b><span class="hint">Ask for PTO or sick hours on certain days.</span></button>' +
-      '<button class="choice" type="button" data-c="fix"><b>Fix a missed punch</b><span class="hint">Forgot to clock in or out? Send the right time.</span></button></div>', buttons: [{ label: "Cancel", value: null }],
+    if (pinMode) return needPassword("Sign in with your password to submit a request.");
+    const v = await ask({ title: "New request", html: '<div class="list"><button class="choice" type="button" data-c="off"><b>Time off</b><span class="hint">Request PTO or sick leave for one or more days.</span></button>' +
+      '<button class="choice" type="button" data-c="fix"><b>Missed punch correction</b><span class="hint">Forgot to clock in or out? Submit the correct time.</span></button></div>', buttons: [{ label: "Cancel", value: null }],
       onOpen: (done) => $$("[data-c]", dlg).forEach(b => b.addEventListener("click", () => done(b.dataset.c))) });
     if (v === "off") requestTimeOff(emp, wk); else if (v === "fix") requestFix(emp, wk);
   });
@@ -1922,12 +1938,12 @@ async function viewMe(opts = {}) {
 async function confirmHours(w, afterPunch) {
   const emp = S.emp, wk = w.wk, early = !PAY.weekOver(wk);
   const v = await ask({ title: afterPunch ? "Before you go: confirm your hours" : "Confirm your hours",
-    text: "By confirming, you agree the hours shown for " + weekLc(wk) + " are correct" + (early ? " so far" : "") + ": " + hrs(w.worked) + " hours worked" + (w.pto + w.sick + w.holiday ? ", plus " + hrs(w.pto + w.sick + w.holiday) + " hours of PTO, sick or holiday" : "") + "." + (afterPunch ? " If something's wrong, choose Not now and tell your manager." : ""),
+    text: "By confirming, you agree the hours shown for " + weekLc(wk) + " are correct" + (early ? " so far" : "") + ": " + hrs(w.worked) + " hours worked" + (w.pto + w.sick + w.holiday ? ", plus " + hrs(w.pto + w.sick + w.holiday) + " hours of PTO, sick or holiday" : "") + "." + (afterPunch ? " If something is incorrect, select Not now and let your manager know." : ""),
     buttons: [{ label: afterPunch ? "Not now" : "Cancel", value: false }, { label: "Confirm", value: true, kind: "btn-primary" }] });
   if (!v) return false;
   await addEvent(wk, emp.id, { type: "signoff" });
   await notifyManagers(fullName(emp) + " confirmed their hours for " + weekLc(wk) + (early ? " so far" : "") + ": " + hrs(w.total) + " h.", { v: "empweek", id: emp.id, wk }, emp.id);
-  toast("Thanks, your hours are confirmed.");
+  toast("Your hours are confirmed.");
   return true;
 }
 /* where a phone is when it clocks in or out; gives up after a few seconds so it never holds up the punch */
@@ -1943,49 +1959,49 @@ function getLoc(ms = 8000) {
   });
 }
 function reqRow(r) {
-  const st = r.status === "approved" ? '<span class="tag ok">Approved</span>' : r.status === "denied" ? '<span class="tag bad">Not approved</span>' : '<span class="tag warn">Waiting for approval</span>';
-  return '<div class="item-row"><div><span class="t">' + esc(reqTitle(r)) + '</span><span class="s">' + esc(reqDetail(r)) + '</span>' + (r.reply ? '<span class="s">Manager: ' + esc(r.reply) + '</span>' : "") + '</div>' + st + '</div>';
+  const st = r.status === "approved" ? '<span class="tag ok">Approved</span>' : r.status === "denied" ? '<span class="tag bad">Declined</span>' : '<span class="tag warn">Pending approval</span>';
+  return '<div class="item-row"><div><span class="t">' + esc(reqTitle(r)) + '</span><span class="s">' + esc(reqDetail(r)) + '</span>' + (r.reply ? '<span class="s">Manager note: ' + esc(r.reply) + '</span>' : "") + '</div>' + st + '</div>';
 }
-const reqTitle = (r) => r.kind === "fix" ? "Missed punch, " + fmtDay(r.date) : (CATS[r.kind] || r.kind) + ", " + (r.dates || [r.date]).map(fmtDay).join(", ");
-const reqDetail = (r) => r.kind === "fix" ? [r.inTime ? "in " + fmtTime(at(r.date, r.inTime)) : "", r.outTime ? "out " + fmtTime(at(r.date, r.outTime)) : ""].filter(Boolean).join(", ") + (r.note ? " · " + r.note : "")
-  : hrs(r.hours) + " hours a day" + (r.note ? " · " + r.note : "");
+const reqTitle = (r) => r.kind === "fix" ? "Missed punch correction, " + fmtDay(r.date) : (CATS[r.kind] || r.kind) + ", " + datesText(r.dates || [r.date]);
+const reqDetail = (r) => r.kind === "fix" ? [r.inTime ? "Time in " + fmtTime(at(r.date, r.inTime)) : "", r.outTime ? "Time out " + fmtTime(at(r.date, r.outTime)) : ""].filter(Boolean).join(" · ") + (r.note ? " · " + r.note : "")
+  : hrs(r.hours) + " h per day" + (r.note ? " · " + r.note : "");
 async function requestTimeOff(emp, wk) {
   const today = dayKey(new Date());
   const v = await ask({ title: "Request time off", wide: true, html:
     '<div class="field"><label>Type</label><div class="row"><label class="check"><input type="radio" name="k" value="pto" checked><span><b>PTO</b></span></label><label class="check"><input type="radio" name="k" value="sick"><span><b>Sick leave</b></span></label></div></div>' +
     '<div class="grid2"><div class="field"><label for="d1">First day</label><input type="date" id="d1" value="' + today + '"></div><div class="field"><label for="d2">Last day</label><input type="date" id="d2" value="' + today + '"></div></div>' +
-    '<div class="field" style="max-width:220px"><label for="h">Hours each day</label><input type="number" id="h" value="8" min="0.25" max="12" step="0.25"></div>' +
-    '<div class="field"><label for="nt">Note (optional)</label><input type="text" id="nt"></div><p class="hint">Weekdays only. The manager approves it before it counts.</p><p class="err" id="rerr"></p>',
+    '<div class="field" style="max-width:220px"><label for="h">Hours per day</label><input type="number" id="h" value="8" min="0.25" max="12" step="0.25"></div>' +
+    '<div class="field"><label for="nt">Note (optional)</label><input type="text" id="nt"></div><p class="hint">Applies to weekdays only. Time off counts once a manager approves it.</p><p class="err" id="rerr"></p>',
     buttons: [{ label: "Cancel", value: null }, { label: "Send request", value: "go", kind: "btn-primary", check: async () => {
       const d1 = $("#d1").value, d2 = $("#d2").value, h = Number($("#h").value);
-      if (!d1 || !d2 || d2 < d1) { $("#rerr").textContent = "Choose the first and last day."; return false; }
-      if (!(h > 0 && h <= 12)) { $("#rerr").textContent = "Hours each day must be between 0.25 and 12."; return false; }
-      { const w1 = weekOf(fromKey(d1)), m1 = await weekMeta(w1); if (m1.locked && !paidEarly(m1, w1)) { $("#rerr").textContent = "That week has already been paid. Ask the manager to add it."; return false; } }
+      if (!d1 || !d2 || d2 < d1) { $("#rerr").textContent = "Choose a first day and a last day."; return false; }
+      if (!(h > 0 && h <= 12)) { $("#rerr").textContent = "Hours per day must be between 0.25 and 12."; return false; }
+      { const w1 = weekOf(fromKey(d1)), m1 = await weekMeta(w1); if (m1.locked && !paidEarly(m1, w1)) { $("#rerr").textContent = "That week has already been paid. Ask your manager to add it."; return false; } }
       return true;
     } }] });
   if (v !== "go") return;
   const dates = []; for (let d = fromKey($("#d1").value); dayKey(d) <= $("#d2").value; d = addDays(d, 1)) if (d.getDay() % 6) dates.push(dayKey(d));
-  if (!dates.length) return alertBox("No weekdays chosen", "Time off only counts on weekdays.");
+  if (!dates.length) return alertBox("No weekdays selected", "Time off can only be requested for weekdays.");
   const r = { id: uid(), emp: emp.id, kind: $('input[name="k"]:checked').value, dates, date: dates[0], hours: r2(Number($("#h").value)), note: $("#nt").value.trim(), status: "pending", created: Date.now() };
-  await saveRequest(r); toast("Request sent to the manager."); go("me", { wk });
+  await saveRequest(r); toast("Request submitted."); go("me", { wk });
 }
 async function requestFix(emp, wk) {
   const today = dayKey(new Date());
-  const v = await ask({ title: "Fix a missed punch", wide: true, html:
-    '<p class="muted">Forgot to clock in or out? Enter the right time. It counts once the manager approves it.</p>' +
-    '<div class="field" style="max-width:240px"><label for="fd">Day</label><input type="date" id="fd" value="' + today + '" max="' + today + '"></div>' +
-    '<div class="grid2"><div class="field"><label for="fi">Time in (if you missed it)</label><input type="time" id="fi"></div><div class="field"><label for="fo">Time out (if you missed it)</label><input type="time" id="fo"></div></div>' +
-    '<div class="field"><label for="fn">What happened?</label><input type="text" id="fn" placeholder="Forgot to clock out for lunch"></div><p class="err" id="ferr"></p>',
+  const v = await ask({ title: "Missed punch correction", wide: true, html:
+    '<p class="muted">Enter the correct time. It counts once a manager approves it.</p>' +
+    '<div class="field" style="max-width:240px"><label for="fd">Date</label><input type="date" id="fd" value="' + today + '" max="' + today + '"></div>' +
+    '<div class="grid2"><div class="field"><label for="fi">Time in (if missed)</label><input type="time" id="fi"></div><div class="field"><label for="fo">Time out (if missed)</label><input type="time" id="fo"></div></div>' +
+    '<div class="field"><label for="fn">Reason</label><input type="text" id="fn" placeholder="Forgot to clock out for lunch"></div><p class="err" id="ferr"></p>',
     buttons: [{ label: "Cancel", value: null }, { label: "Send request", value: "go", kind: "btn-primary", check: async () => {
-      if (!$("#fd").value) { $("#ferr").textContent = "Choose the day."; return false; }
-      { const w1 = weekOf(fromKey($("#fd").value)), m1 = await weekMeta(w1); if (m1.locked && !paidEarly(m1, w1)) { $("#ferr").textContent = "That week has already been paid. Ask the manager to fix it."; return false; } }
-      if (!$("#fi").value && !$("#fo").value) { $("#ferr").textContent = "Enter a time in, a time out, or both."; return false; }
-      if ($("#fi").value && $("#fo").value && $("#fo").value <= $("#fi").value) { $("#ferr").textContent = "The time out has to be after the time in."; return false; }
+      if (!$("#fd").value) { $("#ferr").textContent = "Choose the date."; return false; }
+      { const w1 = weekOf(fromKey($("#fd").value)), m1 = await weekMeta(w1); if (m1.locked && !paidEarly(m1, w1)) { $("#ferr").textContent = "That week has already been paid. Ask your manager to correct it."; return false; } }
+      if (!$("#fi").value && !$("#fo").value) { $("#ferr").textContent = "Enter a time in, a time out or both."; return false; }
+      if ($("#fi").value && $("#fo").value && $("#fo").value <= $("#fi").value) { $("#ferr").textContent = "Time out must be after time in."; return false; }
       return true;
     } }] });
   if (v !== "go") return;
   const r = { id: uid(), emp: emp.id, kind: "fix", date: $("#fd").value, inTime: $("#fi").value || "", outTime: $("#fo").value || "", note: $("#fn").value.trim(), status: "pending", created: Date.now() };
-  await saveRequest(r); toast("Request sent to the manager."); go("me", { wk });
+  await saveRequest(r); toast("Request submitted."); go("me", { wk });
 }
 
 /* ================================================================ manage (managers only) */
@@ -2008,7 +2024,7 @@ async function viewManage(opts = {}) {
   }
   if (tab === "team") { await panePeople(P); if (opts.monthly) monthlyTimeOff(); return; }
   if (tab === "reports") {
-    P.innerHTML = '<div class="card"><div class="card-head"><h2>Time card summaries</h2><p class="muted">For taxes, payroll records and year-end: monthly, quarterly, yearly or any dates you pick. Print it or download it as a spreadsheet.</p></div><div id="rform" style="display:grid;gap:16px"></div></div>';
+    P.innerHTML = '<div class="card"><div class="card-head"><h2>Time card summaries</h2><p class="muted">Summaries for taxes, payroll records and year-end reporting, by month, quarter, year or custom dates. Print them or download them as a spreadsheet.</p></div><div id="rform" style="display:grid;gap:16px"></div></div>';
     return reportForm($("#rform"), opts.last);
   }
   return paneSettings(P, opts.year || new Date().getFullYear(), opts.open);
@@ -2025,21 +2041,21 @@ async function paneWeek(P, wk) {
     const ot = otTag(w); if (ot) f.push(ot);
     f.push(w.signed && !w.changedAfterSign ? '<span class="tag ok">Confirmed</span>' : '<span class="tag">Not confirmed</span>');
     const st = pst[w.emp.id];
-    if (st && st.open) f.push('<span class="tag warn">' + sgn(st.diff.total) + ' h to add next payroll</span>');
-    else if (st && st.s && st.s.est && !st.over) f.push('<span class="tag est">' + Object.keys(st.s.est).sort().map(shortDay).join(", ") + ' estimated for payroll</span>');
-    else if (st && st.car.where.length && Math.abs(st.car.sum.total) >= 0.01) f.push('<span class="tag ok">Corrected on a later payroll</span>');
+    if (st && st.open) f.push('<span class="tag warn">' + sgn(st.diff.total) + ' h on next payroll</span>');
+    else if (st && st.s && st.s.est && !st.over) f.push('<span class="tag est">' + Object.keys(st.s.est).sort().map(shortDay).join(", ") + ' estimated</span>');
+    else if (st && st.car.where.length && Math.abs(st.car.sum.total) >= 0.01) f.push('<span class="tag ok">Corrected on later payroll</span>');
     return f.join("");
   };
   const tot = (k) => hrs(ws.reduce((s, w) => s + w[k], 0));
   P.innerHTML = '<div class="card"><div class="page-head"><div class="wk-nav"><button class="navbtn no-print" id="prev" aria-label="Previous week">‹</button><div><div class="lbl">' + esc(weekLabel(wk)) + '</div><div class="sub">' + esc(weekRange(wk)) +
-    (meta.locked ? ' · <b>Payroll done</b> ' + esc(fmtStamp(meta.lock.created)) : " · Payroll not done yet") + '</div></div><button class="navbtn no-print" id="next" aria-label="Next week"' + (wk >= weekOf(new Date()) ? " disabled" : "") + '>›</button></div>' +
-    '<div class="row no-print">' + (meta.locked ? '<button class="btn btn-primary" type="button" id="psheet">Payroll sheet</button><button class="btn btn-secondary" type="button" id="unlock">Unlock to redo payroll</button>' : '<button class="btn btn-primary" type="button" id="lock">Do payroll for this week</button>') +
+    (meta.locked ? ' · <b>Payroll completed</b> ' + esc(fmtStamp(meta.lock.created)) : " · Payroll not yet completed") + '</div></div><button class="navbtn no-print" id="next" aria-label="Next week"' + (wk >= weekOf(new Date()) ? " disabled" : "") + '>›</button></div>' +
+    '<div class="row no-print">' + (meta.locked ? '<button class="btn btn-primary" type="button" id="psheet">View payroll sheet</button><button class="btn btn-secondary" type="button" id="unlock">Unlock and redo payroll</button>' : '<button class="btn btn-primary" type="button" id="lock">Run payroll</button>') +
     '<button class="btn btn-secondary" type="button" id="out">Print time sheets</button></div></div>' +
     (people.length ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Employee</th><th class="num">Regular</th><th class="num">Overtime</th><th class="num">PTO</th><th class="num">Sick</th><th class="num">Holiday</th><th class="num">Total paid</th><th>Notes</th></tr></thead><tbody>' +
       ws.map((w, i) => '<tr class="click" data-emp="' + w.emp.id + '"><td><b>' + esc(fullName(w.emp)) + '</b><div class="hint">' + esc(w.emp.position || "") + '</div></td><td class="num">' + hrs(w.reg) + '</td><td class="num">' + hrs(w.ot) + '</td><td class="num">' + hrs(w.pto) + '</td><td class="num">' + hrs(w.sick) + '</td><td class="num">' + hrs(w.holiday) + '</td><td class="num"><b>' + hrs(w.total) + '</b></td><td><div class="flags">' + flagsOf(w) + '</div></td></tr>').join("") +
       '</tbody><tfoot><tr><td>All employees</td><td class="num">' + tot("reg") + '</td><td class="num">' + tot("ot") + '</td><td class="num">' + tot("pto") + '</td><td class="num">' + tot("sick") + '</td><td class="num">' + tot("holiday") + '</td><td class="num">' + tot("total") + '</td><td></td></tr></tfoot></table></div>'
       : '<p class="muted">No hourly employees yet.</p>') +
-    '<p class="hint no-print">Click a name to see their day-by-day time card and make changes.</p></div>';
+    '<p class="hint no-print">Select an employee to view or edit their daily time card.</p></div>';
   $("#prev").addEventListener("click", () => go("manage", { tab: "cards", wk: shiftWeek(wk, -1) }));
   $("#next").addEventListener("click", () => go("manage", { tab: "cards", wk: shiftWeek(wk, 1) }));
   $$("tr[data-emp]").forEach(r => r.addEventListener("click", () => go("empweek", { id: r.dataset.emp, wk })));
@@ -2047,7 +2063,7 @@ async function paneWeek(P, wk) {
   if ($("#lock")) $("#lock").addEventListener("click", () => doPayroll(wk, ws));
   if ($("#psheet")) $("#psheet").addEventListener("click", () => go("payroll", { wk }));
   if ($("#unlock")) $("#unlock").addEventListener("click", async () => {
-    const v = await ask({ title: "Unlock this week?", text: "Do this to change and redo payroll for " + weekLc(wk) + ". Employees can send requests for it again. The payroll sheet stays until you do payroll again.", buttons: [{ label: "Cancel", value: false }, { label: "Unlock", value: true, kind: "btn-primary" }] });
+    const v = await ask({ title: "Unlock this week?", text: "Unlock " + weekLc(wk) + " to make changes and run payroll again. Employees can submit requests for this week again. The current payroll sheet remains until payroll is run again.", buttons: [{ label: "Cancel", value: false }, { label: "Unlock", value: true, kind: "btn-primary" }] });
     if (!v) return;
     await addWeekMeta(wk, { type: "unlock" }); await logChange("Unlocked " + weekLc(wk)); go("manage", { tab: "cards", wk });
   });
@@ -2078,23 +2094,23 @@ async function doPayroll(wk, ws) {
   const corrList = Object.keys(corr).flatMap(id => corr[id].map(c => Object.assign({ id }, c)));
   const pendOt = people.filter(w => w.otStatus === "pending" || w.otStatus === "changed").length, miss = people.filter(w => w.issues.length).length;
   const warn = [pendOt ? pendOt + " overtime approval" + (pendOt > 1 ? "s are" : " is") + " still waiting" : "", miss ? miss + " time card" + (miss > 1 ? "s have" : " has") + " a missed punch" : "",
-    corrList.some(c => c.missed) ? "a correction below comes from a week with a missed punch" : ""].filter(Boolean);
+    corrList.some(c => c.missed) ? "a correction below is from a week with a missed punch" : ""].filter(Boolean);
   const soFar = PAY.soFar;
   const v = await ask({ title: "Payroll for " + weekLc(wk), wide: true, html:
-    (estDays.length ? '<p>The week isn\'t over yet, so enter the hours you expect each person to work on ' + estDays.map(k => fmtDay(k)).join(" and ") + '. The numbers are filled in from their usual hours. Once the real times are in, any difference is added to the next payroll automatically.</p>' +
+    (estDays.length ? '<p>The week isn\'t over yet. Enter the hours you expect each person to work on ' + estDays.map(k => fmtDay(k)).join(" and ") + '. Estimates are based on each person\'s usual hours. Once actual times are recorded, any difference is added to the next payroll automatically.</p>' +
       '<div class="tbl-wrap"><table class="tbl est-t"><thead><tr><th>Employee</th><th class="num">Worked so far</th>' + estDays.map(k => '<th class="num">' + esc(fmtDay(k)) + '</th>').join("") + '</tr></thead><tbody>' +
       people.map(w => '<tr><td><b>' + esc(fullName(w.emp)) + '</b></td><td class="num">' + hrs(soFar(w)) + '</td>' + estDays.map(k => '<td class="num"><input type="number" class="est-in" data-est="' + w.emp.id + '|' + k + '" min="0" max="24" step="0.25" value="' + sugg[w.emp.id][k] + '" aria-label="' + esc(fullName(w.emp) + ", " + fmtDay(k)) + ' hours"></td>').join("") + '</tr>').join("") + '</tbody></table></div>'
-      : '<p>This makes the payroll sheet for ' + weekLc(wk) + ' and locks the week.</p>') +
-    (corrList.length ? '<p><b>Corrections from earlier weeks</b> (added to this payroll):</p><ul class="plain">' + corrList.map(c => '<li>' + esc(nameOf(c.id)) + ', ' + esc(weekLc(c.wk)) + ': ' + sgn(c.total) + ' h (paid ' + hrs(c.paid) + ', actual ' + hrs(c.actual) + ')' + (c.missed ? ' <span class="tag bad">missed punch</span>' : "") + '</li>').join("") + '</ul>' : "") +
-    (warn.length ? '<div class="note warn"><b>Before you send it</b><span>' + esc(warn.join("; ")) + '. You can still do payroll now.</span></div>' : "") + '<p class="err" id="perr"></p>',
-    buttons: [{ label: "Cancel", value: false }, { label: "Make the payroll sheet", value: true, kind: "btn-primary", check: () => {
-      for (const i of $$(".est-in")) { const n = Number(i.value); if (i.value === "" || !(n >= 0 && n <= 24)) { $("#perr").textContent = "Enter hours from 0 to 24 for each day (0 if they won't work)."; i.focus(); return false; } }
+      : '<p>This creates the payroll sheet for ' + weekLc(wk) + ' and locks the week.</p>') +
+    (corrList.length ? '<p><b>Corrections from earlier weeks</b> (included in this payroll):</p><ul class="plain">' + corrList.map(c => '<li>' + esc(nameOf(c.id)) + ', ' + esc(weekLc(c.wk)) + ': ' + sgn(c.total) + ' h (paid ' + hrs(c.paid) + ', actual ' + hrs(c.actual) + ')' + (c.missed ? ' <span class="tag bad">missed punch</span>' : "") + '</li>').join("") + '</ul>' : "") +
+    (warn.length ? '<div class="note warn"><b>Review before continuing</b><span>' + esc(warn.join("; ")) + '. You can still run payroll now.</span></div>' : "") + '<p class="err" id="perr"></p>',
+    buttons: [{ label: "Cancel", value: false }, { label: "Create payroll sheet", value: true, kind: "btn-primary", check: () => {
+      for (const i of $$(".est-in")) { const n = Number(i.value); if (i.value === "" || !(n >= 0 && n <= 24)) { $("#perr").textContent = "Enter 0 to 24 hours for each day (0 if they won't work)."; i.focus(); return false; } }
       return true;
     } }] });
   if (!v) return;
   const snapshot = PAY.makeSnapshot(people, estDays, (id, k) => $('[data-est="' + id + '|' + k + '"]').value, corr);
   await addWeekMeta(wk, { type: "lock", snapshot, early: estDays.length > 0 });
-  await logChange("Did payroll for " + weekLc(wk) + (estDays.length ? " (" + estDays.map(fmtDay).join(", ") + " estimated)" : "") + (corrList.length ? "; corrections for earlier weeks included" : ""));
+  await logChange("Ran payroll for " + weekLc(wk) + (estDays.length ? " (" + estDays.map(fmtDay).join(", ") + " estimated)" : "") + (corrList.length ? "; corrections for earlier weeks included" : ""));
   for (const w of people) {
     if (w.emp.active === false) continue;
     await notify(w.emp.id, PAY.paidNotice(snapshot[w.emp.id], wk));
@@ -2108,9 +2124,9 @@ const payrollCsv = PAY.payrollCsv;
 /* the sheet is emailed at 5 PM Thursday; payroll done (or redone) after that is emailed right away */
 async function mailIfLate(wk) {
   if (!(D.settings && D.settings.payrollEmail)) return;
-  if (Date.now() < PAY.thursday5pm(wk)) { toast("Done. It will be emailed to " + D.settings.payrollEmail + " at 5 PM Thursday.", 5000); return; }
-  try { const r = await api("emailPayroll", { wk }); toast("Done, and emailed to " + r.to + ".", 5000); }
-  catch (e) { toast("Done, but the email didn't send: " + e.message, 7000); }
+  if (Date.now() < PAY.thursday5pm(wk)) { toast("Payroll complete. The sheet will be emailed to " + D.settings.payrollEmail + " at 5 PM Thursday.", 5000); return; }
+  try { const r = await api("emailPayroll", { wk }); toast("Payroll complete. The sheet was emailed to " + r.to + ".", 5000); }
+  catch (e) { toast("Payroll complete, but the email couldn't be sent: " + e.message, 7000); }
 }
 function printHtml(html) {
   let area = $("#print-area"); if (!area) { area = document.createElement("div"); area.id = "print-area"; document.body.appendChild(area); }
@@ -2128,9 +2144,9 @@ async function viewPayroll({ wk }) {
   if (!meta.locked) return go("manage", { tab: "cards", wk });
   const P = payrollData(meta, wk);
   view().innerHTML = navBar("cards") +
-    '<div class="page-head no-print"><button class="btn btn-text" type="button" id="back">← Time Cards</button><div class="row"><button class="btn btn-secondary" type="button" id="pcsv">Download spreadsheet</button><button class="btn btn-primary" type="button" id="pprint">Print</button></div></div>' +
+    '<div class="page-head no-print"><button class="btn btn-text" type="button" id="back">← Back to Time Cards</button><div class="row"><button class="btn btn-secondary" type="button" id="pcsv">Download spreadsheet</button><button class="btn btn-primary" type="button" id="pprint">Print</button></div></div>' +
     '<div class="card report">' + payrollHtml(P) + '</div>' +
-    '<p class="hint no-print">' + (D.settings && D.settings.payrollEmail ? "This sheet is emailed to " + esc(D.settings.payrollEmail) + " at 5 PM Thursday (right away if payroll is done or redone after that). " : "") + 'You can also print it, save it as a PDF from the print screen, or download the spreadsheet. It stays here under Time Cards for this week.</p>';
+    '<p class="hint no-print">' + (D.settings && D.settings.payrollEmail ? "This sheet is emailed to " + esc(D.settings.payrollEmail) + " at 5 PM Thursday, or immediately if payroll is run after that time. " : "") + 'You can also print it, save it as a PDF from the print dialog or download the spreadsheet. It remains available under Time Cards for this week.</p>';
   wireNav();
   $("#back").addEventListener("click", () => go("manage", { tab: "cards", wk }));
   $("#pprint").addEventListener("click", () => printHtml(payrollHtml(P)));
@@ -2148,22 +2164,22 @@ async function monthlyTimeOff() {
   const loaded = (mk) => people.filter(e => added(e.id, mk, "pto") || added(e.id, mk, "sick"));
   const mk0 = loaded(opts[1]).length ? opts[2] : opts[1];
   const val = (x) => Number(x) > 0 ? Number(x) : 0;
-  const v = await ask({ title: "Add monthly PTO and sick hours", wide: true, html:
-    '<p class="muted">Adds the hours each person earned to their balance. The amounts are remembered, so next month you just check them and save.</p>' +
+  const v = await ask({ title: "Add monthly PTO and sick leave", wide: true, html:
+    '<p class="muted">Adds each person\'s earned hours to their balance. Amounts are saved for next month, so you only need to review them and save.</p>' +
     '<div class="field" style="max-width:260px"><label for="mm">Month</label><select id="mm">' + opts.map(k => '<option value="' + k + '"' + (k === mk0 ? " selected" : "") + '>' + esc(monthLabel(k)) + '</option>').join("") + '</select></div>' +
     '<div class="note warn" id="mwarn" hidden></div>' +
-    '<div class="tbl-wrap"><table class="tbl est-t"><thead><tr><th>Employee</th><th class="num">PTO left</th><th class="num">Add PTO</th><th class="num">Sick left</th><th class="num">Add sick</th></tr></thead><tbody>' +
+    '<div class="tbl-wrap"><table class="tbl est-t"><thead><tr><th>Employee</th><th class="num">PTO balance</th><th class="num">Add PTO</th><th class="num">Sick balance</th><th class="num">Add sick</th></tr></thead><tbody>' +
     people.map(e => '<tr><td><b>' + esc(fullName(e)) + '</b></td><td class="num">' + hrs(B[e.id].pto) + '</td><td class="num"><input type="number" class="est-in" data-m="' + e.id + '|pto" min="0" max="200" step="0.25" value="' + val(e.monthPto) + '" aria-label="' + esc(fullName(e)) + ' PTO to add"></td>' +
       '<td class="num">' + hrs(B[e.id].sick) + '</td><td class="num"><input type="number" class="est-in" data-m="' + e.id + '|sick" min="0" max="200" step="0.25" value="' + val(e.monthSick) + '" aria-label="' + esc(fullName(e)) + ' sick hours to add"></td></tr>').join("") + '</tbody></table></div>' +
-    '<p class="hint">Put 0 for anyone who doesn\'t earn it. To take hours away or fix a balance, use Edit next to their name.</p><p class="err" id="merr"></p>',
-    buttons: [{ label: "Cancel", value: false }, { label: "Add hours", value: true, kind: "btn-primary", check: () => {
-      for (const i of $$("[data-m]")) { const n = Number(i.value); if (i.value !== "" && !(n >= 0)) { $("#merr").textContent = "Use 0 or more hours."; i.focus(); return false; } }
-      if (!$$("[data-m]").some(i => Number(i.value) > 0)) { $("#merr").textContent = "Enter the hours to add for at least one person."; return false; }
+    '<p class="hint">Enter 0 for anyone who doesn\'t accrue time off. To subtract hours or correct a balance, select Edit next to their name.</p><p class="err" id="merr"></p>',
+    buttons: [{ label: "Cancel", value: false }, { label: "Add to balances", value: true, kind: "btn-primary", check: () => {
+      for (const i of $$("[data-m]")) { const n = Number(i.value); if (i.value !== "" && !(n >= 0)) { $("#merr").textContent = "Enter 0 or more hours."; i.focus(); return false; } }
+      if (!$$("[data-m]").some(i => Number(i.value) > 0)) { $("#merr").textContent = "Enter hours for at least one person."; return false; }
       return true;
     } }],
     onOpen: () => {
       const upd = () => { const mk = $("#mm").value; const got = loaded(mk); const w = $("#mwarn"); w.hidden = !got.length;
-        w.innerHTML = got.length ? '<b>Already added for ' + esc(monthLabel(mk)) + '</b><span>' + got.map(e => esc(fullName(e)) + ": " + [added(e.id, mk, "pto") ? "PTO " + hrs(added(e.id, mk, "pto")) + " h" : "", added(e.id, mk, "sick") ? "sick " + hrs(added(e.id, mk, "sick")) + " h" : ""].filter(Boolean).join(", ")).join("; ") + '. Saving adds more on top.</span>' : ""; };
+        w.innerHTML = got.length ? '<b>Already added for ' + esc(monthLabel(mk)) + '</b><span>' + got.map(e => esc(fullName(e)) + ": " + [added(e.id, mk, "pto") ? "PTO " + hrs(added(e.id, mk, "pto")) + " h" : "", added(e.id, mk, "sick") ? "sick " + hrs(added(e.id, mk, "sick")) + " h" : ""].filter(Boolean).join(", ")).join("; ") + '. Saving again adds to these amounts.</span>' : ""; };
       $("#mm").addEventListener("change", upd); upd();
     } });
   if (!v) return;
@@ -2175,11 +2191,11 @@ async function monthlyTimeOff() {
     if (val(e.monthPto) !== p || val(e.monthSick) !== s) { e.monthPto = p; e.monthSick = s; await saveEmp(e); }
     if (p || s) {
       log.push(fullName(e) + (p ? " PTO +" + hrs(p) : "") + (s ? " sick +" + hrs(s) : ""));
-      await notify(e.id, "Your earned time off for " + name + " was added: " + [p ? "+" + hrs(p) + " h PTO" : "", s ? "+" + hrs(s) + " h sick leave" : ""].filter(Boolean).join(", ") + ". You now have " + hrs(B[e.id].pto + p) + " h PTO and " + hrs(B[e.id].sick + s) + " h sick leave.", { v: "me" });
+      await notify(e.id, "Earned time off for " + name + " was added: " + [p ? "+" + hrs(p) + " h PTO" : "", s ? "+" + hrs(s) + " h sick leave" : ""].filter(Boolean).join(", ") + ". Your balance is now " + hrs(B[e.id].pto + p) + " h PTO and " + hrs(B[e.id].sick + s) + " h sick leave.", { v: "me" });
     }
   }
   await logChange("Added earned time off for " + monthLabel(mk) + ": " + log.join("; "));
-  toast("Added " + name + "'s PTO and sick hours."); go("manage", { tab: "team" });
+  toast(name + " PTO and sick leave added."); go("manage", { tab: "team" });
 }
 
 /* classic paper time sheet, one page per person */
@@ -2196,7 +2212,7 @@ function sheetHtml(w, bal) {
         '<td class="num">' + (j === 0 && d.worked ? hrs(d.worked) : "") + '</td><td>' + esc(other) + '</td></tr>');
     });
   });
-  const otTxt = w.ot ? hrs(w.ot) + (w.otStatus === "approved" ? " (approved)" : " (not yet approved)") : "0.00";
+  const otTxt = w.ot ? hrs(w.ot) + (w.otStatus === "approved" ? " (approved)" : " (pending approval)") : "0.00";
   return '<section class="sheet"><div class="sh-head"><img src="brand/masterpiece-logo.svg" alt="" class="sh-logo"><div><h1>Employee Time Sheet</h1><p>Masterpiece Construction Experts</p></div></div>' +
     '<table class="sh-info"><tr><th>Name</th><td>' + esc(fullName(w.emp)) + '</td><th>Week ending</th><td>' + esc(fmtLong(fridayOf(w.wk))) + '</td></tr>' +
     '<tr><th>Position</th><td>' + esc(w.emp.position || "") + '</td><th>Week</th><td>' + esc(weekRange(w.wk)) + '</td></tr></table>' +
@@ -2204,8 +2220,8 @@ function sheetHtml(w, bal) {
     '<tfoot><tr><td colspan="6">Total hours worked</td><td class="num">' + hrs(w.worked) + '</td><td></td></tr></tfoot></table>' +
     '<table class="sh-tot"><tr><th>Regular</th><th>Overtime</th><th>PTO</th><th>Sick</th><th>Holiday</th><th>Total paid hours</th></tr>' +
     '<tr><td>' + hrs(w.reg) + '</td><td>' + otTxt + '</td><td>' + hrs(w.pto) + '</td><td>' + hrs(w.sick) + '</td><td>' + hrs(w.holiday) + '</td><td><b>' + hrs(w.total) + '</b></td></tr></table>' +
-    (bal ? '<p class="sh-bal">Balance when printed: PTO ' + hrs(bal.pto) + ' h · Sick leave ' + hrs(bal.sick) + ' h</p>' : "") +
-    (w.issues.length ? '<p class="sh-bal">Missed punches: ' + w.issues.map(esc).join("; ") + '</p>' : "") +
+    (bal ? '<p class="sh-bal">Balance as of printing: PTO ' + hrs(bal.pto) + ' h · Sick leave ' + hrs(bal.sick) + ' h</p>' : "") +
+    (w.issues.length ? '<p class="sh-bal">Missed punches: ' + w.issues.map(x => esc(issueText(x))).join("; ") + '</p>' : "") +
     '<div class="sh-sign"><div>Employee signature<span></span>Date<span class="d"></span></div><div>Manager approval<span></span>Date<span class="d"></span></div></div>' +
     '<p class="sh-foot">Printed ' + esc(fmtStamp(Date.now())) + (w.signed && !w.changedAfterSign ? " · Confirmed by employee " + esc(fmtStamp(w.signed.created)) : "") + '</p></section>';
 }
@@ -2231,14 +2247,14 @@ async function viewEmpWeek({ id, wk }) {
   view().innerHTML = navBar("cards") + backBtn("All Time Cards") +
     '<div class="card"><div class="page-head"><div><h2>' + esc(fullName(emp)) + '</h2><p class="muted">' + esc(emp.position || "") + '</p></div>' +
     '<button class="btn btn-secondary no-print" type="button" id="print">Print time sheet</button></div>' +
-    '<div class="wk-nav no-print"><button class="navbtn" id="prev" aria-label="Previous week">‹</button><div><div class="lbl">' + esc(weekLabel(wk)) + '</div><div class="sub">' + esc(weekRange(wk)) + (meta.locked ? " · Payroll done" : "") + '</div></div><button class="navbtn" id="next" aria-label="Next week"' + (wk >= weekOf(new Date()) ? " disabled" : "") + '>›</button></div>' +
-    (st && st.open ? '<div class="note warn"><b>Different from what was paid</b><span>Paid ' + hrs(st.paid) + ' h, actual ' + hrs(w.total) + ' h. The difference (' + sgn(st.diff.total) + ' h) is added automatically the next time you do payroll.</span></div>'
-      : st && st.s && st.s.est && !st.over ? '<div class="note"><b>Payroll was done before the week ended</b><span>Estimated for payroll: ' + Object.keys(st.s.est).sort().map(k => esc(fmtDay(k)) + " " + hrs(st.s.est[k]) + " h").join(", ") + '. If the real hours are different, the difference is added to the next payroll.</span></div>'
+    '<div class="wk-nav no-print"><button class="navbtn" id="prev" aria-label="Previous week">‹</button><div><div class="lbl">' + esc(weekLabel(wk)) + '</div><div class="sub">' + esc(weekRange(wk)) + (meta.locked ? " · Payroll completed" : "") + '</div></div><button class="navbtn" id="next" aria-label="Next week"' + (wk >= weekOf(new Date()) ? " disabled" : "") + '>›</button></div>' +
+    (st && st.open ? '<div class="note warn"><b>Differs from hours paid</b><span>Paid ' + hrs(st.paid) + ' h, actual ' + hrs(w.total) + ' h. The difference (' + sgn(st.diff.total) + ' h) will be added automatically to the next payroll.</span></div>'
+      : st && st.s && st.s.est && !st.over ? '<div class="note"><b>Payroll was run before the week ended</b><span>Estimated for payroll: ' + Object.keys(st.s.est).sort().map(k => esc(fmtDay(k)) + " " + hrs(st.s.est[k]) + " h").join(", ") + '. If actual hours differ, the difference will be added to the next payroll.</span></div>'
       : st && st.car.where.length && Math.abs(st.car.sum.total) >= 0.01 ? '<div class="note"><b>Corrected on a later payroll</b><span>The difference (' + sgn(st.car.sum.total) + ' h) was added to the payroll for ' + st.car.where.map(x => esc(weekLc(x))).join(" and ") + '.</span></div>' : "") +
-    (w.issues.length ? '<div class="note bad"><b>Missed punch</b><span>' + w.issues.map(esc).join("<br>") + '. Tap Edit on that day to fix it.</span></div>' : "") +
-    (w.otStatus === "pending" || w.otStatus === "changed" ? '<div class="note warn"><b>' + hrs(w.ot) + ' h overtime needs your approval</b><span>' + (w.otStatus === "changed" ? "You approved " + hrs(w.otApproved) + " h, but the hours changed since." : "Over " + OT_LIMIT + " hours worked this week.") + '</span><div class="row" style="margin-top:8px"><button class="btn btn-primary mini" type="button" id="ot-ok">Approve overtime</button></div></div>' : "") +
+    (w.issues.length ? '<div class="note bad"><b>Missed punch</b><span>' + w.issues.map(x => esc(issueText(x))).join("<br>") + '. Select Edit on that day to correct it.</span></div>' : "") +
+    (w.otStatus === "pending" || w.otStatus === "changed" ? '<div class="note warn"><b>' + hrs(w.ot) + ' h of overtime needs your approval</b><span>' + (w.otStatus === "changed" ? "You approved " + hrs(w.otApproved) + " h, but the hours have changed since then." : "More than " + OT_LIMIT + " hours worked this week.") + '</span><div class="row" style="margin-top:8px"><button class="btn btn-primary mini" type="button" id="ot-ok">Approve overtime</button></div></div>' : "") +
     statsBlock(w, bal) + weekTable(w, { admin: true }) +
-    '<p class="hint no-print">Tap <b>Edit</b> on a day to change or add times, or add PTO, sick or holiday hours.</p></div>';
+    '<p class="hint no-print">Select <b>Edit</b> on a day to change or add times, or to add PTO, sick or holiday hours.</p></div>';
   wireNav();
   $("#back").addEventListener("click", () => go("manage", { tab: "cards", wk }));
   $("#prev").addEventListener("click", () => go("empweek", { id, wk: shiftWeek(wk, -1) }));
@@ -2256,19 +2272,19 @@ async function editDay(emp, wk, w, key) {
   const pairRows = d.pairs.map((p, i) => '<div class="ed-row" data-pair="' + i + '"><div class="field"><label>Time in</label><input type="time" data-k="in" value="' + (p.in ? timeVal(p.in.at) : "") + '"' + (p.in ? "" : ' placeholder=""') + '></div>' +
     '<div class="field"><label>Time out</label><input type="time" data-k="out" value="' + (p.out ? timeVal(p.out.at) : "") + '"></div>' +
     '<label class="check"><input type="checkbox" data-k="rm"><span>Remove</span></label></div>').join("");
-  const entRows = d.entries.filter(x => x.id || x.auto).map((x, i) => '<label class="check" data-ent="' + i + '"><input type="checkbox"><span>Remove ' + esc((CATS[x.cat] || x.cat) + " " + hrs(x.hours) + " h") + (x.note ? " (" + esc(x.note) + ")" : "") + (x.auto ? " for " + esc(emp.first) + " only" : "") + '</span></label>').join("");
+  const entRows = d.entries.filter(x => x.id || x.auto).map((x, i) => '<label class="check" data-ent="' + i + '"><input type="checkbox"><span>Remove ' + esc((CATS[x.cat] || x.cat) + " " + hrs(x.hours) + " h") + (x.note ? " (" + esc(x.note) + ")" : "") + (x.auto ? " (" + esc(emp.first) + " only)" : "") + '</span></label>').join("");
   const ents = d.entries.filter(x => x.id || x.auto);
   const v = await ask({ title: fullName(emp) + ", " + fmtLong(key), wide: true, html: '<div class="edit-day">' +
-    (pairRows ? '<b>Clock times</b>' + pairRows : '<p class="muted">No clock times this day.</p>') +
-    '<b>Add a time in / out</b><div class="ed-row"><div class="field"><label for="ai">Time in</label><input type="time" id="ai"></div><div class="field"><label for="ao">Time out</label><input type="time" id="ao"></div><span></span></div>' +
+    (pairRows ? '<b>Clock times</b>' + pairRows : '<p class="muted">No clock times on this day.</p>') +
+    '<b>Add a time in or out</b><div class="ed-row"><div class="field"><label for="ai">Time in</label><input type="time" id="ai"></div><div class="field"><label for="ao">Time out</label><input type="time" id="ao"></div><span></span></div>' +
     (entRows ? '<b>Other hours</b>' + entRows : "") +
-    '<b>Add hours</b><div class="ed-row"><div class="field"><label for="hc">Kind</label><select id="hc"><option value="">None</option><option value="pto">PTO</option><option value="sick">Sick leave</option><option value="holiday">Holiday</option><option value="worked">Worked (no clock times)</option></select></div>' +
+    '<b>Add hours</b><div class="ed-row"><div class="field"><label for="hc">Type</label><select id="hc"><option value="">None</option><option value="pto">PTO</option><option value="sick">Sick leave</option><option value="holiday">Holiday</option><option value="worked">Worked (no clock times)</option></select></div>' +
     '<div class="field"><label for="hh">Hours</label><input type="number" id="hh" value="8" min="0.25" max="24" step="0.25"></div><span></span></div>' +
-    '<div class="field"><label for="why">Reason (shows in the change log)</label><input type="text" id="why"></div><p class="err" id="eerr"></p></div>',
+    '<div class="field"><label for="why">Reason (recorded in the change history)</label><input type="text" id="why"></div><p class="err" id="eerr"></p></div>',
     buttons: [{ label: "Cancel", value: false }, { label: "Save changes", value: true, kind: "btn-primary", check: () => {
-      if ($("#ai").value && $("#ao").value && $("#ao").value <= $("#ai").value) { $("#eerr").textContent = "The new time out has to be after the time in."; return false; }
-      for (const r of $$("[data-pair]")) { const a = $('[data-k="in"]', r).value, b = $('[data-k="out"]', r).value; if (a && b && b <= a && !$('[data-k="rm"]', r).checked) { $("#eerr").textContent = "Each time out has to be after its time in."; return false; } }
-      if ($("#hc").value && !(Number($("#hh").value) > 0)) { $("#eerr").textContent = "Enter how many hours to add."; return false; }
+      if ($("#ai").value && $("#ao").value && $("#ao").value <= $("#ai").value) { $("#eerr").textContent = "The new time out must be after the time in."; return false; }
+      for (const r of $$("[data-pair]")) { const a = $('[data-k="in"]', r).value, b = $('[data-k="out"]', r).value; if (a && b && b <= a && !$('[data-k="rm"]', r).checked) { $("#eerr").textContent = "Each time out must be after its time in."; return false; } }
+      if ($("#hc").value && !(Number($("#hh").value) > 0)) { $("#eerr").textContent = "Enter the number of hours to add."; return false; }
       return true;
     } }] });
   if (!v) return false;
@@ -2312,14 +2328,14 @@ async function paneApprovals(P, pend, otPend) {
   const bal = {};
   for (const r of pend) if (r.kind !== "fix" && !bal[r.emp]) { const e = D.emps.find(x => x.id === r.emp); if (e) bal[r.emp] = await balances(e); }
   const balNote = (r) => { const b = bal[r.emp]; if (!b || r.kind === "fix") return ""; const left = b[r.kind]; const need = r.hours * (r.dates || [r.date]).length;
-    return ' · balance ' + hrs(left) + ' h' + (need > left + 0.001 ? ' (not enough, would go to ' + hrs(left - need) + ' h)' : ""); };
+    return ' · balance ' + hrs(left) + ' h' + (need > left + 0.001 ? ' (insufficient; would be ' + hrs(left - need) + ' h)' : ""); };
   P.innerHTML = '<div class="card wait"><div class="card-head"><h3>Waiting for your approval</h3></div>' +
     (pend.length || otPend.length ? '<div class="list">' +
-      otPend.map(w => '<div class="item-row"><div><span class="t">Overtime: ' + esc(fullName(w.emp)) + ', ' + hrs(w.ot) + ' h</span><span class="s">' + esc(weekLabel(w.wk)) + ' · ' + hrs(w.worked) + ' h worked' + (w.otStatus === "changed" ? " · changed since you approved " + hrs(w.otApproved) + " h" : "") + '</span></div>' +
+      otPend.map(w => '<div class="item-row"><div><span class="t">Overtime: ' + esc(fullName(w.emp)) + ', ' + hrs(w.ot) + ' h</span><span class="s">' + esc(weekLabel(w.wk)) + ' · ' + hrs(w.worked) + ' h worked' + (w.otStatus === "changed" ? " · changed after you approved " + hrs(w.otApproved) + " h" : "") + '</span></div>' +
         '<div class="row"><button class="btn btn-secondary mini" data-view="' + w.emp.id + '|' + w.wk + '">View time card</button><button class="btn btn-primary mini" data-ot="' + w.emp.id + '|' + w.wk + '|' + w.ot + '">Approve</button></div></div>').join("") +
-      pend.map(r => '<div class="item-row"><div><span class="t">' + esc(nameOf(r.emp)) + ': ' + esc(reqTitle(r)) + '</span><span class="s">' + esc(reqDetail(r)) + esc(balNote(r)) + ' · sent ' + esc(fmtStamp(r.created)) + '</span></div>' +
-        '<div class="row"><button class="btn btn-secondary mini" data-deny="' + r.id + '">Don\'t approve</button><button class="btn btn-primary mini" data-approve="' + r.id + '">Approve</button></div></div>').join("") + '</div>'
-      : '<p class="muted">Nothing waiting. 🎉</p>') + '</div>';
+      pend.map(r => '<div class="item-row"><div><span class="t">' + esc(nameOf(r.emp)) + ': ' + esc(reqTitle(r)) + '</span><span class="s">' + esc(reqDetail(r)) + esc(balNote(r)) + ' · submitted ' + esc(fmtStamp(r.created)) + '</span></div>' +
+        '<div class="row"><button class="btn btn-secondary mini" data-deny="' + r.id + '">Decline</button><button class="btn btn-primary mini" data-approve="' + r.id + '">Approve</button></div></div>').join("") + '</div>'
+      : '<p class="muted">No pending approvals.</p>') + '</div>';
   $$("[data-view]").forEach(b => b.addEventListener("click", () => { const [id, wk] = b.dataset.view.split("|"); go("empweek", { id, wk }); }));
   $$("[data-ot]").forEach(b => b.addEventListener("click", async () => {
     const [id, wk, h] = b.dataset.ot.split("|");
@@ -2329,9 +2345,9 @@ async function paneApprovals(P, pend, otPend) {
   }));
   const decide = async (rid, ok) => {
     const r = pend.find(x => x.id === rid); if (!r) return;
-    const v = await ask({ title: (ok ? "Approve " : "Don't approve ") + nameOf(r.emp).split(" ")[0] + "'s request?", text: reqTitle(r) + " · " + reqDetail(r),
+    const v = await ask({ title: (ok ? "Approve " : "Decline ") + nameOf(r.emp).split(" ")[0] + "'s request?", text: reqTitle(r) + " · " + reqDetail(r),
       html: '<div class="field"><label for="rp">Note to ' + esc(nameOf(r.emp).split(" ")[0]) + ' (optional)</label><input type="text" id="rp"></div>',
-      buttons: [{ label: "Cancel", value: false }, { label: ok ? "Approve" : "Don't approve", value: true, kind: ok ? "btn-primary" : "btn-danger-solid" }] });
+      buttons: [{ label: "Cancel", value: false }, { label: ok ? "Approve" : "Decline", value: true, kind: ok ? "btn-primary" : "btn-danger-solid" }] });
     if (!v) return;
     r.reply = $("#rp") ? $("#rp").value.trim() : "";
     if (ok) {
@@ -2347,9 +2363,9 @@ async function paneApprovals(P, pend, otPend) {
       }
     }
     r.status = ok ? "approved" : "denied"; r.decidedBy = S.emp.id; r.decided = Date.now();
-    await saveRequest(r); await logChange((ok ? "Approved " : "Didn't approve ") + nameOf(r.emp) + "'s request: " + reqTitle(r) + " (" + reqDetail(r) + ")");
-    await notify(r.emp, "Your request (" + reqTitle(r) + ") was " + (ok ? "approved" : "not approved") + "." + (r.reply ? " " + nameOf(S.emp.id).split(" ")[0] + ": " + r.reply : ""));
-    toast(ok ? "Approved." : "Marked as not approved."); go("manage", { tab: "cards" });
+    await saveRequest(r); await logChange((ok ? "Approved " : "Declined ") + nameOf(r.emp) + "'s request: " + reqTitle(r) + " (" + reqDetail(r) + ")");
+    await notify(r.emp, "Your request (" + reqTitle(r) + ") was " + (ok ? "approved" : "declined") + "." + (r.reply ? " " + nameOf(S.emp.id).split(" ")[0] + ": " + r.reply : ""));
+    toast(ok ? "Request approved." : "Request declined."); go("manage", { tab: "cards" });
   };
   $$("[data-approve]").forEach(b => b.addEventListener("click", () => decide(b.dataset.approve, true)));
   $$("[data-deny]").forEach(b => b.addEventListener("click", () => decide(b.dataset.deny, false)));
@@ -2362,50 +2378,50 @@ async function panePeople(P) {
   const pendingDev = dv.devices.filter(d => d.status === "pending");
   const openInv = dv.invites.filter(i => !i.used && i.role !== "device").sort((a, b) => b.created - a.created);
   P.innerHTML =
-    (pendingDev.length ? '<div class="card wait"><div class="card-head"><h3>New computer waiting to be allowed</h3><p class="muted">Allow it only if it\'s an office computer. Phones invited for someone who works away from the office connect on their own.</p></div><div class="list">' +
-      pendingDev.map(d => '<div class="item-row"><div><span class="t">' + esc(d.label) + '</span><span class="s">Asked ' + esc(fmtStamp(d.created)) + '</span></div><div class="row"><button class="btn btn-secondary mini" data-deny-dev="' + d.id + '">Don\'t allow</button><button class="btn btn-primary mini" data-allow-dev="' + d.id + '">Allow</button></div></div>').join("") + '</div></div>' : "") +
-    '<div class="card"><div class="page-head"><div class="card-head"><h3>Employees</h3><p class="muted">Invite someone and they make their own account from the email.</p></div><div class="row"><button class="btn btn-secondary" type="button" id="monthly">Add monthly PTO &amp; sick</button><button class="btn btn-primary" type="button" id="invite">Invite an employee</button></div></div>' +
-    '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Position</th><th class="num">PTO left</th><th class="num">Sick left</th><th>Status</th><th></th></tr></thead><tbody>' +
+    (pendingDev.length ? '<div class="card wait"><div class="card-head"><h3>Computer awaiting approval</h3><p class="muted">Approve it only if it\'s an office computer. Phones for field employees connect automatically from their invitation.</p></div><div class="list">' +
+      pendingDev.map(d => '<div class="item-row"><div><span class="t">' + esc(d.label) + '</span><span class="s">Requested ' + esc(fmtStamp(d.created)) + '</span></div><div class="row"><button class="btn btn-secondary mini" data-deny-dev="' + d.id + '">Decline</button><button class="btn btn-primary mini" data-allow-dev="' + d.id + '">Approve</button></div></div>').join("") + '</div></div>' : "") +
+    '<div class="card"><div class="page-head"><div class="card-head"><h3>Employees</h3><p class="muted">Invite employees by email. They create their own account from the invitation.</p></div><div class="row"><button class="btn btn-secondary" type="button" id="monthly">Add monthly PTO &amp; sick</button><button class="btn btn-primary" type="button" id="invite">Invite an employee</button></div></div>' +
+    '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Position</th><th class="num">PTO balance</th><th class="num">Sick balance</th><th>Status</th><th></th></tr></thead><tbody>' +
     D.emps.map((e, i) => '<tr><td><b>' + esc(fullName(e)) + '</b>' + (e.admin ? ' <span class="tag ok">Manager</span>' : "") + '</td><td>' + esc(e.position || "") + (e.hourly === false ? ' <span class="hint">(not hourly)</span>' : "") + '</td><td class="num">' + hrs(bals[i].pto) + '</td><td class="num">' + hrs(bals[i].sick) + '</td><td>' + (e.active === false ? '<span class="tag">Inactive</span>' : '<span class="tag ok">Active</span>') + '</td>' +
       '<td class="num"><button class="btn btn-secondary mini" data-edit-emp="' + e.id + '">Edit</button></td></tr>').join("") + '</tbody></table></div>' +
-    (openInv.length ? '<p class="hint">Invites sent but not used yet: ' + openInv.map(i => esc(i.name || "someone") + (i.phone ? " (phone)" : "") + ", " + esc(fmtDate(dayKey(i.created)))).join(" · ") + '</p>' : "") +
-    '<details class="more"><summary>Add someone without an email invite</summary><div><p class="muted">Makes the account and gives you a temporary PIN to hand them. They pick their own PIN the first time they sign in.</p><div><button class="btn btn-secondary" type="button" id="add-emp">Add employee</button></div></div></details></div>' +
-    '<div class="card"><div class="page-head"><div class="card-head"><h3>Computers and phones</h3><p class="muted">Only these can use the time clock. Remove one that\'s no longer used.</p></div><button class="btn btn-secondary" type="button" id="connect-pc">Connect another office computer</button></div>' +
+    (openInv.length ? '<p class="hint">Pending invitations: ' + openInv.map(i => esc(i.name || "someone") + (i.phone ? " (phone)" : "") + ", " + esc(fmtDate(dayKey(i.created)))).join(" · ") + '</p>' : "") +
+    '<details class="more"><summary>Add an employee without an email invitation</summary><div><p class="muted">Makes the account and gives you a temporary PIN to hand them. They pick their own PIN the first time they sign in.</p><div><button class="btn btn-secondary" type="button" id="add-emp">Add employee</button></div></div></details></div>' +
+    '<div class="card"><div class="page-head"><div class="card-head"><h3>Computers and phones</h3><p class="muted">Only these devices can use the time clock. Remove any that are no longer in use.</p></div><button class="btn btn-secondary" type="button" id="connect-pc">Connect another office computer</button></div>' +
     (dv.devices.length ? '<div class="list">' + dv.devices.sort((a, b) => a.created - b.created).map(d => '<div class="item-row"><div><span class="t">' + esc(d.label) + (d.emp ? " · " + esc(nameOf(d.emp)) : "") + '</span><span class="s">' +
-      (d.status === "allowed" ? "Allowed" : d.status === "pending" ? "Waiting for you to allow it" : "Not allowed") + ' · connected ' + esc(fmtDate(dayKey(d.created))) + '</span></div>' +
-      '<div class="row">' + (d.status !== "allowed" ? '<button class="btn btn-primary mini" data-allow-dev="' + d.id + '">Allow</button>' : "") + '<button class="linkx" data-rm-dev="' + d.id + '">Remove</button></div></div>').join("") + '</div>' : '<p class="muted">None yet.</p>') + '</div>';
+      (d.status === "allowed" ? "Approved" : d.status === "pending" ? "Awaiting your approval" : "Declined") + ' · Connected ' + esc(fmtDate(dayKey(d.created))) + '</span></div>' +
+      '<div class="row">' + (d.status !== "allowed" ? '<button class="btn btn-primary mini" data-allow-dev="' + d.id + '">Approve</button>' : "") + '<button class="linkx" data-rm-dev="' + d.id + '">Remove</button></div></div>').join("") + '</div>' : '<p class="muted">No devices yet.</p>') + '</div>';
   $("#invite").addEventListener("click", () => inviteDialog("employee"));
   $("#monthly").addEventListener("click", monthlyTimeOff);
   $("#connect-pc").addEventListener("click", () => inviteDialog("device"));
   $("#add-emp").addEventListener("click", () => editEmployee(null));
   $$("[data-edit-emp]").forEach(b => b.addEventListener("click", () => editEmployee(D.emps.find(e => e.id === b.dataset.editEmp))));
   const decide = async (id, body, msg) => { try { await api("decideDevice", Object.assign({ id }, body)); await logChange(msg); go("manage", { tab: "team" }); } catch (e) { showError(e); } };
-  $$("[data-allow-dev]").forEach(b => b.addEventListener("click", () => { const d = dv.devices.find(x => x.id === b.dataset.allowDev); decide(d.id, { allow: true }, "Allowed " + d.label + " to use the time clock"); }));
-  $$("[data-deny-dev]").forEach(b => b.addEventListener("click", () => { const d = dv.devices.find(x => x.id === b.dataset.denyDev); decide(d.id, { allow: false }, "Didn't allow " + d.label); }));
+  $$("[data-allow-dev]").forEach(b => b.addEventListener("click", () => { const d = dv.devices.find(x => x.id === b.dataset.allowDev); decide(d.id, { allow: true }, "Approved " + d.label + " for the time clock"); }));
+  $$("[data-deny-dev]").forEach(b => b.addEventListener("click", () => { const d = dv.devices.find(x => x.id === b.dataset.denyDev); decide(d.id, { allow: false }, "Declined " + d.label); }));
   $$("[data-rm-dev]").forEach(b => b.addEventListener("click", async () => {
     const d = dv.devices.find(x => x.id === b.dataset.rmDev);
-    const v = await ask({ title: "Remove " + d.label + "?", text: "It can't use the time clock anymore until it's connected again with an invite.", buttons: [{ label: "Cancel", value: false }, { label: "Remove", value: true, kind: "btn-danger-solid" }] });
+    const v = await ask({ title: "Remove " + d.label + "?", text: "It won't be able to use the time clock until it's connected again with an invitation.", buttons: [{ label: "Cancel", value: false }, { label: "Remove", value: true, kind: "btn-danger-solid" }] });
     if (v) decide(d.id, { remove: true }, "Removed " + d.label + " from the time clock");
   }));
 }
 async function inviteDialog(role) {
   const dev = role === "device";
   const v = await ask({ title: dev ? "Connect another office computer" : "Invite an employee", wide: true, html: dev
-    ? '<p class="muted">Makes a link to open once on the other computer. You\'ll then allow it here. (An employee opening their own invite email on a computer connects it too.)</p>'
-    : '<div class="field"><label for="iname">Their name (optional)</label><input type="text" id="iname" placeholder="First and last name"></div>' +
-      '<label class="check"><input type="checkbox" id="iphone"><span><b>Works away from the office and clocks in on their own phone</b><span class="hint">For example, a laborer on job sites. Their phone connects right away and only they can sign in on it.</span></span></label>',
-    buttons: [{ label: "Cancel", value: false }, { label: "Make the link", value: true, kind: "btn-primary" }] });
+    ? '<p class="muted">Creates a one-time link. Open it on the other office computer, then approve the computer here. An employee opening their own invitation email on a computer also connects it.</p>'
+    : '<div class="field"><label for="iname">Employee name (optional)</label><input type="text" id="iname" placeholder="First and last name"></div>' +
+      '<label class="check"><input type="checkbox" id="iphone"><span><b>Field employee who clocks in on their own phone</b><span class="hint">For example, a laborer on job sites. Their phone connects automatically, and only they can sign in on it.</span></span></label>',
+    buttons: [{ label: "Cancel", value: false }, { label: "Create link", value: true, kind: "btn-primary" }] });
   if (!v) return;
   const name = $("#iname") ? $("#iname").value.trim() : "", phone = $("#iphone") ? $("#iphone").checked : false;
   let r; try { r = await api("invite", { role: dev ? "device" : "employee", phone, name }); } catch (e) { return showError(e); }
   const link = joinLink(r.code);
   const first = name.split(" ")[0];
   const body = dev ? "Open this link on the office computer to connect it to the Masterpiece Time Clock:\n\n" + link
-    : "Hi" + (first ? " " + first : "") + ",\n\nHere's your invite to the Masterpiece Time Clock. " + (phone ? "Open this link on your phone" : "Open this link on an office computer") + ", then make your account with your name, position and a 6-digit PIN:\n\n" + link + "\n\nThe link works once to make your account. After that, just sign in with your name and password." + (phone ? " Tip: add the page to your home screen so it's one tap away." : "");
-  await logChange(dev ? "Made a link to connect another office computer" : "Invited " + (name || "an employee") + (phone ? " (phone)" : ""));
-  await ask({ title: dev ? "Link ready" : "Invite ready", wide: true, html: '<div class="field"><label for="il">Link</label><input type="text" id="il" readonly value="' + esc(link) + '"></div>' +
-    '<p class="hint">' + (dev ? "It works on one computer." : "It makes one account. Opening it again on another office computer just asks you to allow that computer.") + '</p>' +
-    '<div class="row"><a class="btn btn-primary" id="mail" href="mailto:?subject=' + encodeURIComponent(dev ? "Connect this computer to the Masterpiece Time Clock" : "Your Masterpiece Time Clock invite") + '&body=' + encodeURIComponent(body) + '">Email it</a><button class="btn btn-secondary" type="button" id="copy">Copy link</button></div>',
+    : "Hi" + (first ? " " + first : "") + ",\n\nYou've been invited to the Masterpiece Time Clock. " + (phone ? "Open this link on your phone" : "Open this link on an office computer") + ", then create your account with your name, position and a 6-digit PIN:\n\n" + link + "\n\nThe link can be used once to create your account. After that, select your name on the time clock and enter your PIN." + (phone ? "\n\nTip: add the page to your home screen for quick access." : "");
+  await logChange(dev ? "Created a link to connect another office computer" : "Invited " + (name || "an employee") + (phone ? " (phone)" : ""));
+  await ask({ title: dev ? "Connection link ready" : "Invitation ready", wide: true, html: '<div class="field"><label for="il">Link</label><input type="text" id="il" readonly value="' + esc(link) + '"></div>' +
+    '<p class="hint">' + (dev ? "The link works on one computer." : "The link creates one account. Opening it on another office computer only requests approval for that computer.") + '</p>' +
+    '<div class="row"><a class="btn btn-primary" id="mail" href="mailto:?subject=' + encodeURIComponent(dev ? "Connect this computer to the Masterpiece Time Clock" : "Your Masterpiece Time Clock invitation") + '&body=' + encodeURIComponent(body) + '">Send email</a><button class="btn btn-secondary" type="button" id="copy">Copy link</button></div>',
     buttons: [{ label: "Done", value: true, kind: "btn-secondary" }],
     onOpen: () => { $("#copy").addEventListener("click", async () => { try { await navigator.clipboard.writeText(link); toast("Copied."); } catch (_) { $("#il").select(); } }); } });
   go("manage", { tab: "team" });
@@ -2417,21 +2433,21 @@ async function editEmployee(emp) {
   const pending = ask({ title: isNew ? "Add an employee" : fullName(e), wide: true, html:
     '<div class="grid2"><div class="field"><label for="ef">First name</label><input type="text" id="ef" value="' + esc(e.first) + '"></div><div class="field"><label for="el">Last name</label><input type="text" id="el" value="' + esc(e.last) + '"></div></div>' +
     '<div class="grid2"><div class="field"><label for="ep">Position</label><input type="text" id="ep" value="' + esc(e.position) + '"></div><div class="field"><label for="epid">Payroll company ID (optional)</label><input type="text" id="epid" value="' + esc(e.payrollId || "") + '"></div></div>' +
-    '<label class="check"><input type="checkbox" id="eh"' + (e.hourly !== false ? " checked" : "") + '><span><b>Hourly</b><span class="hint">Shows on the time clock and in weekly hours.</span></span></label>' +
-    '<label class="check"><input type="checkbox" id="ea"' + (e.admin ? " checked" : "") + '><span><b>Manager</b><span class="hint">Can approve requests, fix time cards and reset passwords.</span></span></label>' +
-    (isNew ? '<div class="field" id="et-wrap" hidden><label for="et">Temporary manager password</label><input type="text" id="et" value="mpc-' + rnd().slice(0, 5) + '"><span class="hint">Managers also have a password, for the manager pages. They choose their own the first time they use it.</span></div>' +
-      '<p class="hint">You\'ll get a temporary PIN to give them. They pick their own the first time they sign in.</p>' :
-      '<label class="check"><input type="checkbox" id="ex"' + (e.active === false ? "" : " checked") + '><span><b>Active</b><span class="hint">Uncheck when someone leaves. Their time cards stay.</span></span></label>' +
-      '<div class="sep"></div><div class="row"><span><b>PTO left:</b> ' + hrs(bal.pto) + ' h · <b>Sick left:</b> ' + hrs(bal.sick) + ' h</span></div>' +
-      '<div class="grid2"><div class="field"><label for="bp">Add PTO hours (use − to take away)</label><input type="number" id="bp" step="0.25" placeholder="0"></div><div class="field"><label for="bs">Add sick hours (use − to take away)</label><input type="number" id="bs" step="0.25" placeholder="0"></div></div>' +
-      '<div class="field"><label for="bn">Reason for the balance change</label><input type="text" id="bn" placeholder="Starting balance, or a correction"></div>' +
+    '<label class="check"><input type="checkbox" id="eh"' + (e.hourly !== false ? " checked" : "") + '><span><b>Hourly</b><span class="hint">Appears on the time clock and in weekly hours.</span></span></label>' +
+    '<label class="check"><input type="checkbox" id="ea"' + (e.admin ? " checked" : "") + '><span><b>Manager</b><span class="hint">Can approve requests, edit time cards and reset PINs and passwords.</span></span></label>' +
+    (isNew ? '<div class="field" id="et-wrap" hidden><label for="et">Temporary manager password</label><input type="text" id="et" value="mpc-' + rnd().slice(0, 5) + '"><span class="hint">Managers also use a password for the manager pages. They\'ll choose their own the first time they sign in with it.</span></div>' +
+      '<p class="hint">You\'ll receive a temporary PIN to give them. They\'ll choose their own the first time they sign in.</p>' :
+      '<label class="check"><input type="checkbox" id="ex"' + (e.active === false ? "" : " checked") + '><span><b>Active</b><span class="hint">Clear this when someone leaves. Their time cards are kept.</span></span></label>' +
+      '<div class="sep"></div><div class="row"><span><b>PTO balance:</b> ' + hrs(bal.pto) + ' h · <b>Sick balance:</b> ' + hrs(bal.sick) + ' h</span></div>' +
+      '<div class="grid2"><div class="field"><label for="bp">Adjust PTO (hours, use − to subtract)</label><input type="number" id="bp" step="0.25" placeholder="0"></div><div class="field"><label for="bs">Adjust sick leave (hours, use − to subtract)</label><input type="number" id="bs" step="0.25" placeholder="0"></div></div>' +
+      '<div class="field"><label for="bn">Reason for adjustment</label><input type="text" id="bn" placeholder="Starting balance or correction"></div>' +
       '<div class="sep"></div><div class="row"><button class="btn btn-secondary mini" type="button" id="reset-pin">Reset PIN</button>' + (e.admin ? '<button class="btn btn-secondary mini" type="button" id="reset-pw">Reset password</button>' : "") + '</div>') +
     '<p class="err" id="eerr"></p>',
     buttons: [{ label: "Cancel", value: false }, { label: isNew ? "Add employee" : "Save", value: true, kind: "btn-primary", check: () => {
-      if (!$("#ef").value.trim() || !$("#el").value.trim()) { $("#eerr").textContent = "Type a first and last name."; return false; }
-      if (!isNew && e.admin && !$("#ea").checked && admins().filter(a => a.id !== e.id).length === 0) { $("#eerr").textContent = "There has to be at least one manager."; return false; }
-      if (!isNew && e.admin && $("#ex") && !$("#ex").checked && admins().filter(a => a.id !== e.id).length === 0) { $("#eerr").textContent = "There has to be at least one active manager."; return false; }
-      if (isNew && $("#ea").checked && $("#et").value.length < 6) { $("#eerr").textContent = "The temporary password needs at least 6 characters."; return false; }
+      if (!$("#ef").value.trim() || !$("#el").value.trim()) { $("#eerr").textContent = "Enter a first and last name."; return false; }
+      if (!isNew && e.admin && !$("#ea").checked && admins().filter(a => a.id !== e.id).length === 0) { $("#eerr").textContent = "There must be at least one manager."; return false; }
+      if (!isNew && e.admin && $("#ex") && !$("#ex").checked && admins().filter(a => a.id !== e.id).length === 0) { $("#eerr").textContent = "There must be at least one active manager."; return false; }
+      if (isNew && $("#ea").checked && $("#et").value.length < 6) { $("#eerr").textContent = "The temporary password must be at least 6 characters."; return false; }
       return true;
     } }],
   });
@@ -2439,13 +2455,13 @@ async function editEmployee(emp) {
   if ($("#reset-pin")) $("#reset-pin").addEventListener("click", async () => {
     let r; try { r = await api("resetPin", { emp: e.id }); } catch (err) { $("#eerr").textContent = err.message; return; }
     await logChange("Reset " + fullName(e) + "'s PIN");
-    const box = $("#eerr"); box.style.color = "var(--good)"; box.textContent = "Temporary PIN: " + r.temp + ". Give it to " + e.first + "; they'll pick their own when they sign in.";
+    const box = $("#eerr"); box.style.color = "var(--good)"; box.textContent = "Temporary PIN: " + r.temp + ". Give it to " + e.first + ". They'll choose a new PIN when they sign in.";
   });
   if ($("#reset-pw")) $("#reset-pw").addEventListener("click", async () => {
     const tp = "mpc-" + rnd().slice(0, 5);
     try { await api("resetPassword", { emp: e.id, temp: tp }); } catch (err) { $("#eerr").textContent = err.message; return; }
     await logChange("Reset " + fullName(e) + "'s password");
-    const box = $("#eerr"); box.style.color = "var(--good)"; box.textContent = "Temporary password: " + tp + ". They'll choose a new one when they sign in.";
+    const box = $("#eerr"); box.style.color = "var(--good)"; box.textContent = "Temporary password: " + tp + ". They'll choose a new password when they sign in.";
   });
   const v = await pending;
   if (v === null || v === false) return;
@@ -2453,7 +2469,7 @@ async function editEmployee(emp) {
   if (isNew) { const tp = $("#et").value; const made = await api("addEmployee", { e, temp: e.admin ? tp : "" }); Mirror.set("employees/" + made.emp.id + ".json", JSON.stringify(made.emp)); await syncNow(); if (e.payrollId) await saveEmp(Object.assign({}, made.emp, { payrollId: e.payrollId })); await logChange("Added employee " + fullName(e)); await alertBox("Employee added", "Give " + e.first + " this temporary PIN: " + made.tempPin + (e.admin ? ", and this temporary manager password: " + tp : "") + ". They'll pick their own the first time they sign in."); }
   else {
     e.active = $("#ex").checked;
-    const bp = Number($("#bp").value) || 0, bs = Number($("#bs").value) || 0, note = $("#bn").value.trim() || "Balance change";
+    const bp = Number($("#bp").value) || 0, bs = Number($("#bs").value) || 0, note = $("#bn").value.trim() || "Balance adjustment";
     await saveEmp(e);
     if (e.admin && !emp.admin) {   // a new manager needs a password for the manager pages
       const tp = "mpc-" + rnd().slice(0, 5);
@@ -2471,15 +2487,15 @@ async function editEmployee(emp) {
 function paneHolidays(P, year) {
   const hs = (D.settings.holidays || []).filter(h => h.date.startsWith(year + "-")).sort((a, b) => a.date.localeCompare(b.date));
   P.innerHTML = '<div class="card"><div class="page-head"><div class="wk-nav"><button class="navbtn" id="py">‹</button><div class="lbl">Paid holidays ' + year + '</div><button class="navbtn" id="ny">›</button></div>' +
-    '<div class="row"><button class="btn btn-secondary" type="button" id="suggest">Add common holidays</button><button class="btn btn-primary" type="button" id="custom">+ Add your own holiday</button></div></div>' +
-    '<p class="muted">Everyone hourly, you included, is paid these hours automatically on each holiday. Changes here apply to everyone. To take a holiday off just one person\'s card, use Edit on that day in their time card.</p>' +
-    (hs.length ? '<div class="list">' + hs.map(h => '<div class="item-row"><div><span class="t">' + esc(h.name) + '</span><span class="s">' + esc(fmtLong(h.date)) + ' · ' + hrs(h.hours) + ' h</span></div><div class="row"><button class="linke" data-edit-hol="' + h.id + '">Change</button><button class="linkx" data-del-hol="' + h.id + '">Remove</button></div></div>').join("") + '</div>' : '<p class="muted">No holidays for ' + year + ' yet.</p>') + '</div>';
+    '<div class="row"><button class="btn btn-secondary" type="button" id="suggest">Add standard holidays</button><button class="btn btn-primary" type="button" id="custom">Add custom holiday</button></div></div>' +
+    '<p class="muted">Holiday hours are added automatically to every hourly employee\'s time card, including yours. Changes here apply to everyone. To remove a holiday from one person\'s time card, edit that day on their time card.</p>' +
+    (hs.length ? '<div class="list">' + hs.map(h => '<div class="item-row"><div><span class="t">' + esc(h.name) + '</span><span class="s">' + esc(fmtLong(h.date)) + ' · ' + hrs(h.hours) + ' h</span></div><div class="row"><button class="linke" data-edit-hol="' + h.id + '">Edit</button><button class="linkx" data-del-hol="' + h.id + '">Remove</button></div></div>').join("") + '</div>' : '<p class="muted">No holidays for ' + year + ' yet.</p>') + '</div>';
   $("#py").addEventListener("click", () =>go("manage", { tab: "settings", open: "hol", year: year - 1 }));
   $("#ny").addEventListener("click", () =>go("manage", { tab: "settings", open: "hol", year: year + 1 }));
   $$("[data-edit-hol]").forEach(b => b.addEventListener("click", async () => {
     const h = D.settings.holidays.find(x => x.id === b.dataset.editHol); if (!h) return;
-    const v = await ask({ title: "Change " + h.name, html: '<div class="field"><label for="cn">Name</label><input type="text" id="cn" value="' + esc(h.name) + '"></div><div class="grid2"><div class="field"><label for="cd">Date</label><input type="date" id="cd" value="' + h.date + '"></div><div class="field"><label for="ch">Hours</label><input type="number" id="ch" value="' + h.hours + '" step="0.25" min="0"></div></div><p class="hint">Changes apply to every employee\'s time card, including yours.</p><p class="err" id="cerr"></p>',
-      buttons: [{ label: "Cancel", value: false }, { label: "Save", value: true, kind: "btn-primary", check: () => { if (!$("#cn").value.trim() || !$("#cd").value) { $("#cerr").textContent = "Type a name and choose a date."; return false; } return true; } }] });
+    const v = await ask({ title: "Edit " + h.name, html: '<div class="field"><label for="cn">Name</label><input type="text" id="cn" value="' + esc(h.name) + '"></div><div class="grid2"><div class="field"><label for="cd">Date</label><input type="date" id="cd" value="' + h.date + '"></div><div class="field"><label for="ch">Hours</label><input type="number" id="ch" value="' + h.hours + '" step="0.25" min="0"></div></div><p class="hint">Changes apply to every hourly employee\'s time card.</p><p class="err" id="cerr"></p>',
+      buttons: [{ label: "Cancel", value: false }, { label: "Save", value: true, kind: "btn-primary", check: () => { if (!$("#cn").value.trim() || !$("#cd").value) { $("#cerr").textContent = "Enter a name and choose a date."; return false; } return true; } }] });
     if (!v) return;
     const before = h.name + " (" + fmtDate(h.date) + ", " + hrs(h.hours) + " h)";
     await loadSettings(); const H = D.settings.holidays.find(x => x.id === h.id); if (!H) return;
@@ -2489,14 +2505,14 @@ function paneHolidays(P, year) {
   }));
   $$("[data-del-hol]").forEach(b => b.addEventListener("click", async () => {
     const h = D.settings.holidays.find(x => x.id === b.dataset.delHol);
-    const v = await ask({ title: "Remove " + h.name + "?", text: "Its hours come off everyone's time card for " + fmtDay(h.date) + ".", buttons: [{ label: "Cancel", value: false }, { label: "Remove", value: true, kind: "btn-danger-solid" }] });
+    const v = await ask({ title: "Remove " + h.name + "?", text: "Its hours will be removed from every time card for " + fmtDay(h.date) + ".", buttons: [{ label: "Cancel", value: false }, { label: "Remove", value: true, kind: "btn-danger-solid" }] });
     if (!v) return;
     await loadSettings(); D.settings.holidays = D.settings.holidays.filter(x => x.id !== h.id); await saveSettings(); await logChange("Removed holiday " + h.name + " (" + fmtDate(h.date) + ")");
    go("manage", { tab: "settings", open: "hol", year });
   }));
   $("#suggest").addEventListener("click", async () => {
-    const v = await ask({ title: "Usual holidays for " + year, wide: true, html: '<div class="field" style="max-width:220px"><label for="sh">Hours for each</label><input type="number" id="sh" value="8" step="0.25" min="0"></div>' + holidayChecklist(year, hs),
-      buttons: [{ label: "Cancel", value: false }, { label: "Add checked", value: true, kind: "btn-primary" }] });
+    const v = await ask({ title: "Standard holidays for " + year, wide: true, html: '<div class="field" style="max-width:220px"><label for="sh">Hours per holiday</label><input type="number" id="sh" value="8" step="0.25" min="0"></div>' + holidayChecklist(year, hs),
+      buttons: [{ label: "Cancel", value: false }, { label: "Add selected", value: true, kind: "btn-primary" }] });
     if (!v) return;
     const add = readChecklist($(".hol-list", dlg) || $(".hol-list"), Number($("#sh").value) || 8);
     await loadSettings(); D.settings.holidays = (D.settings.holidays || []).concat(add); await saveSettings();
@@ -2504,8 +2520,8 @@ function paneHolidays(P, year) {
    go("manage", { tab: "settings", open: "hol", year });
   });
   $("#custom").addEventListener("click", async () => {
-    const v = await ask({ title: "Add a holiday", html: '<div class="field"><label for="cn">Name</label><input type="text" id="cn" placeholder="Company picnic"></div><div class="grid2"><div class="field"><label for="cd">Date</label><input type="date" id="cd"></div><div class="field"><label for="ch">Hours</label><input type="number" id="ch" value="8" step="0.25" min="0"></div></div><p class="err" id="cerr"></p>',
-      buttons: [{ label: "Cancel", value: false }, { label: "Add", value: true, kind: "btn-primary", check: () => { if (!$("#cn").value.trim() || !$("#cd").value) { $("#cerr").textContent = "Type a name and choose a date."; return false; } return true; } }] });
+    const v = await ask({ title: "Add a custom holiday", html: '<div class="field"><label for="cn">Name</label><input type="text" id="cn" placeholder="Company day"></div><div class="grid2"><div class="field"><label for="cd">Date</label><input type="date" id="cd"></div><div class="field"><label for="ch">Hours</label><input type="number" id="ch" value="8" step="0.25" min="0"></div></div><p class="err" id="cerr"></p>',
+      buttons: [{ label: "Cancel", value: false }, { label: "Add", value: true, kind: "btn-primary", check: () => { if (!$("#cn").value.trim() || !$("#cd").value) { $("#cerr").textContent = "Enter a name and choose a date."; return false; } return true; } }] });
     if (!v) return;
     const h = { id: uid(), name: $("#cn").value.trim(), date: $("#cd").value, hours: Number($("#ch").value) || 0 };
     await loadSettings(); D.settings.holidays = (D.settings.holidays || []).concat([h]); await saveSettings(); await logChange("Added holiday " + h.name + " (" + fmtDate(h.date) + ", " + hrs(h.hours) + " h)");
@@ -2514,21 +2530,21 @@ function paneHolidays(P, year) {
 }
 async function paneLog(P) {
   const L = await loadLog();
-  P.innerHTML = '<div class="card"><div class="card-head"><h3>Change log</h3><p class="muted">Every change made by a manager, newest first. Entries can\'t be changed in the program.</p></div>' +
-    (L.length ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead><tbody>' + L.map(x => '<tr><td style="white-space:nowrap">' + esc(fmtStamp(x.t)) + '</td><td>' + esc(nameOf(x.by)) + '</td><td>' + esc(x.text) + '</td></tr>').join("") + '</tbody></table></div>' : '<p class="muted">Nothing yet.</p>') + '</div>';
+  P.innerHTML = '<div class="card"><div class="card-head"><h3>Change history</h3><p class="muted">Every change made by a manager, newest first. Entries can\'t be edited.</p></div>' +
+    (L.length ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead><tbody>' + L.map(x => '<tr><td style="white-space:nowrap">' + esc(fmtStamp(x.t)) + '</td><td>' + esc(nameOf(x.by)) + '</td><td>' + esc(x.text) + '</td></tr>').join("") + '</tbody></table></div>' : '<p class="muted">No changes yet.</p>') + '</div>';
 }
 async function paneSettings(P, year, open) {
   const y = new Date().getFullYear();
   const nHol = (D.settings.holidays || []).filter(h => h.date.startsWith(year + "-")).length;
   const r = Number(D.settings.round) || 0;
   const SEC = [
-    ["hol", "Paid holidays", nHol + " paid holiday" + (nHol === 1 ? "" : "s") + " in " + year + ". Add, change or remove holidays."],
-    ["log", "Change history", "See every change a manager has made to time cards, holidays and settings."],
-    ["round", "Rounding clock times", r ? "Counted to the nearest " + r + " minutes" : "Counted exactly, to the minute"],
-    ["email", "Payroll email", D.settings.payrollEmail ? "Each payroll sheet goes to " + D.settings.payrollEmail + " on Thursday at 5 PM." : "Not set: add an email to get each week's payroll sheet automatically."],
-    ["code", "Manager password recovery code", "Make a new code if the one from setup is lost."],
+    ["hol", "Paid holidays", nHol + " paid holiday" + (nHol === 1 ? "" : "s") + " in " + year + ". Add, edit or remove holidays."],
+    ["log", "Change history", "Every change a manager has made to time cards, holidays and settings."],
+    ["round", "Rounding clock times", r ? "Rounded to the nearest " + r + " minutes" : "Exact, to the minute"],
+    ["email", "Payroll email", D.settings.payrollEmail ? "Payroll sheets are emailed to " + D.settings.payrollEmail + " on Thursdays at 5 PM." : "Not set. Add an email address to receive each week's payroll sheet automatically."],
+    ["code", "Manager password recovery code", "Create a new code if the one from setup is lost."],
   ];
-  P.innerHTML = '<div class="card acc-card"><div class="card-head"><h2>Settings</h2><p class="muted">Tap a setting to open it.</p></div>' +
+  P.innerHTML = '<div class="card acc-card"><div class="card-head"><h2>Settings</h2><p class="muted">Select a section to view or change it.</p></div>' +
     SEC.map(([k, t, d]) => '<details class="acc" data-acc-sec="' + k + '"' + (open === k ? " open" : "") + '><summary><div><b>' + esc(t) + '</b><span>' + esc(d) + '</span></div><span class="acc-chev" aria-hidden="true">›</span></summary><div class="acc-body" id="sec-' + k + '"></div></details>').join("") + '</div>' +
     '<div id="s-core" hidden></div>';
   paneHolidays($("#sec-hol"), year);
@@ -2541,12 +2557,12 @@ async function paneSettings(P, year, open) {
 }
 function paneSettingsCore(P) {
   const r = Number(D.settings.round) || 0;
-  P.innerHTML = '<div class="card" data-sec="round"><div class="card-head"><h3>Rounding</h3><p class="muted">Choose how clock-in and clock-out times are counted toward hours. The exact times are always kept on the time card.</p></div>' +
+  P.innerHTML = '<div class="card" data-sec="round"><div class="card-head"><h3>Rounding</h3><p class="muted">Choose how clock-in and clock-out times are counted toward hours. Exact times are always kept on the time card.</p></div>' +
     '<div class="field" style="max-width:320px"><select id="round"><option value="0"' + (r === 0 ? " selected" : "") + '>Exact, to the minute</option><option value="5"' + (r === 5 ? " selected" : "") + '>Nearest 5 minutes</option><option value="15"' + (r === 15 ? " selected" : "") + '>Nearest 15 minutes</option></select></div></div>' +
-    '<div class="card" data-sec="email"><div class="card-head"><h3>Payroll email</h3><p class="muted">Every Thursday at 5 PM (Boise time) the week\'s payroll sheet is emailed here, with the spreadsheet and a PDF attached. If payroll isn\'t done by then, the time clock does it with each person\'s usual hours for Friday. To change it, unlock the week and do payroll again: the new sheet is emailed right away.</p></div>' +
+    '<div class="card" data-sec="email"><div class="card-head"><h3>Payroll email</h3><p class="muted">Every Thursday at 5 PM (Boise time), the week\'s payroll sheet is emailed here with the spreadsheet and a PDF attached. If payroll hasn\'t been run by then, the time clock runs it using each person\'s usual hours for Friday. To make changes, unlock the week and run payroll again. The updated sheet is emailed immediately.</p></div>' +
     '<div class="field" style="max-width:420px"><label for="pmail">Send payroll sheets to</label><input type="email" id="pmail" autocomplete="email" value="' + esc(D.settings.payrollEmail || "") + '" placeholder="name@example.com"></div>' +
     '<div class="row"><button class="btn btn-primary" type="button" id="pmail-save">Save</button><button class="btn btn-secondary" type="button" id="pmail-test">Send a test email</button></div><p class="hint" id="pmail-msg"></p></div>' +
-    '<div class="card" data-sec="code"><div class="card-head"><h3>Manager recovery code</h3><p class="muted">The code you wrote down at setup lets a manager reset a forgotten password. If it\'s lost, make a new one here. The old code stops working.</p></div><div><button class="btn btn-secondary" type="button" id="recode">Make a new recovery code</button></div></div>' +
+    '<div class="card" data-sec="code"><div class="card-head"><h3>Manager recovery code</h3><p class="muted">The code saved during setup lets a manager reset a forgotten password. If it\'s lost, create a new one here. The old code will stop working.</p></div><div><button class="btn btn-secondary" type="button" id="recode">Create new recovery code</button></div></div>' +
     '';
   $("#round").addEventListener("change", async () => {
     await loadSettings(); D.settings.round = Number($("#round").value); await saveSettings();
@@ -2554,21 +2570,21 @@ function paneSettingsCore(P) {
   });
   $("#pmail-save").addEventListener("click", async () => {
     const v = $("#pmail").value.trim();
-    if (v && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) { $("#pmail-msg").textContent = "That doesn't look like an email address."; return; }
+    if (v && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) { $("#pmail-msg").textContent = "Enter a valid email address."; return; }
     await loadSettings(); D.settings.payrollEmail = v; await saveSettings();
     await logChange(v ? "Payroll sheets will be emailed to " + v : "Turned off the payroll email");
-    $("#pmail-msg").textContent = v ? "Saved. Use “Send a test email” to make sure it arrives." : "Saved. Payroll sheets won't be emailed.";
+    $("#pmail-msg").textContent = v ? "Saved. Use Send a test email to confirm delivery." : "Saved. Payroll sheets won't be emailed.";
   });
   $("#pmail-test").addEventListener("click", async () => {
     $("#pmail-msg").textContent = "Sending…";
-    try { const r = await api("testEmail"); $("#pmail-msg").textContent = "Sent to " + r.to + ". Check the inbox (and the spam folder)." + (r.scheduled ? "" : " The Thursday schedule couldn't be turned on: in Apps Script, run setUpThursdayEmail once."); }
+    try { const r = await api("testEmail"); $("#pmail-msg").textContent = "Sent to " + r.to + ". Check the inbox and the spam folder." + (r.scheduled ? "" : " The Thursday schedule couldn't be turned on: in Apps Script, run setUpThursdayEmail once."); }
     catch (e) { $("#pmail-msg").textContent = e.message; }
   });
   $("#recode").addEventListener("click", async () => {
     const code = newCode();
     try { await api("setRecovery", { code }); } catch (e) { return showError(e); }
-    await logChange("Made a new manager recovery code");
-    await ask({ title: "Your new recovery code", html: '<div class="code">' + code + '</div><p class="muted">Write it down and keep it somewhere safe. The old code no longer works.</p>', buttons: [{ label: "I wrote it down", value: true, kind: "btn-primary" }] });
+    await logChange("Created a new manager recovery code");
+    await ask({ title: "Your new recovery code", html: '<div class="code">' + code + '</div><p class="muted">Write it down or take a photo and store it somewhere safe. The old code no longer works.</p>', buttons: [{ label: "I've saved it", value: true, kind: "btn-primary" }] });
   });
 }
 
@@ -2593,7 +2609,7 @@ function reportForm(P, last) {
   P.innerHTML = '<div class="field"><label>Dates</label><div class="row" id="picks">' + picks.map(([k, l]) => '<button class="btn btn-secondary mini' + (k === pick0 ? " on-pick" : "") + '" type="button" data-pick="' + k + '">' + l + '</button>').join("") + '</div></div>' +
     '<div class="grid2"><div class="field"><label for="rf">From</label><input type="date" id="rf" value="' + f0 + '"></div><div class="field"><label for="rt">To</label><input type="date" id="rt" value="' + t0 + '"></div></div>' +
     '<div class="field" style="max-width:360px"><label for="rwho">Who</label><select id="rwho"><option value="">Everyone</option>' + D.emps.filter(e => e.hourly !== false).map(e => '<option value="' + e.id + '"' + (L.who === e.id ? " selected" : "") + '>' + esc(fullName(e)) + '</option>').join("") + '</select></div>' +
-    '<label class="check"><input type="checkbox" id="rdetail"' + (L.detail ? " checked" : "") + '><span><b>Include the day-by-day details</b><span class="hint">Adds each person\'s clock-in and clock-out times, PTO, sick and holiday hours for every day. Takes more pages. Leave it off for the one-page overview.</span></span></label>' +
+    '<label class="check"><input type="checkbox" id="rdetail"' + (L.detail ? " checked" : "") + '><span><b>Include daily details</b><span class="hint">Adds each person\'s clock-in and clock-out times and PTO, sick and holiday hours for every day. Leave this off for a one-page overview.</span></span></label>' +
     '<p class="err" id="rerr"></p><div><button class="btn btn-primary" type="button" id="rgo">Create summary</button></div>';
   $$("[data-pick]", P).forEach(b => b.addEventListener("click", () => {
     $$("[data-pick]", P).forEach(x => x.classList.toggle("on-pick", x === b));
@@ -2602,7 +2618,7 @@ function reportForm(P, last) {
   ["#rf", "#rt"].forEach(id => $(id).addEventListener("input", () => $$("[data-pick]", P).forEach(x => x.classList.toggle("on-pick", x.dataset.pick === "custom"))));
   $("#rgo").addEventListener("click", () => {
     const from = $("#rf").value, to = $("#rt").value;
-    if (!from || !to || to < from) { $("#rerr").textContent = "Choose a From date and a To date after it."; return; }
+    if (!from || !to || to < from) { $("#rerr").textContent = "Choose a start date and an end date after it."; return; }
     const pick = ($("[data-pick].on-pick", P) || {}).dataset?.pick || "custom";
     go("report", { from, to, who: $("#rwho").value, detail: $("#rdetail").checked, pick });
   });
@@ -2625,7 +2641,7 @@ async function buildReport({ from, to, who }) {
     const p = { emp: e, ws, worked: sum("worked"), reg: sum("reg"), ot: sum("ot"), pto: sum("pto"), sick: sum("sick"), holiday: sum("holiday"), total: sum("total"),
       ptoEarned: earned("pto"), sickEarned: earned("sick"), ptoLeft: bal("pto"), sickLeft: bal("sick"), ledger: inRange,
       weeksWorked: ws.filter(w => w.total > 0).length, otUnapproved: r2(ws.filter(w => w.otStatus === "pending" || w.otStatus === "changed").reduce((a, w) => a + w.ot, 0)),
-      missed: ws.reduce((a, w) => a + w.issues.length, 0), unconfirmed: ws.filter(w => w.total > 0 && !(w.signed && !w.changedAfterSign)).length };
+      missed: ws.reduce((a, w) => a + w.issues.length, 0), unconfirmed: ws.filter(w => weekOver(w.wk) && w.total > 0 && !(w.signed && !w.changedAfterSign)).length };
     if (p.total > 0 || e.active !== false) out.push(p);
   }
   const months = {};
@@ -2634,7 +2650,7 @@ async function buildReport({ from, to, who }) {
     for (const k of Object.keys(m)) m[k] = r2(m[k] + w[k]);
   }
   const tot = (k) => r2(out.reduce((a, p) => a + p[k], 0));
-  return { from, to, weeks, people: out, months, metas, unlocked: weeks.filter(wk => !metas[wk].locked && out.some(p => p.ws.find(w => w.wk === wk).total > 0)),
+  return { from, to, weeks, people: out, months, metas, unlocked: weeks.filter(wk => weekOver(wk) && !metas[wk].locked && out.some(p => p.ws.find(w => w.wk === wk).total > 0)),
     totals: { worked: tot("worked"), reg: tot("reg"), ot: tot("ot"), pto: tot("pto"), sick: tot("sick"), holiday: tot("holiday"), total: tot("total"), ptoEarned: tot("ptoEarned"), sickEarned: tot("sickEarned") } };
 }
 const rangeText = (a, b) => fmtDate(a) + " – " + fmtDate(b);
@@ -2644,46 +2660,46 @@ function reportHtml(R, detail) {
   const mkeys = Object.keys(R.months).sort();
   const monthName = (k) => { const [y, m] = k.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" }); };
   let h = '<section class="rp-page"><div class="rp-head"><img src="brand/masterpiece-logo.svg" alt="" class="rp-logo"><div><h1>Time Card Summary</h1><p>Masterpiece Construction Experts</p></div>' +
-    '<div class="rp-meta"><b>' + esc(rangeText(R.from, R.to)) + '</b><span>' + (R.weeks.length ? R.weeks.length + " pay week" + (R.weeks.length > 1 ? "s" : "") + ", ending " + esc(fmtDate(fridayOf(R.weeks[0]))) + " to " + esc(fmtDate(fridayOf(R.weeks[R.weeks.length - 1]))) : "No pay weeks end in these dates") + '</span><span>Created ' + esc(fmtStamp(Date.now())) + (S.emp ? " by " + esc(fullName(S.emp)) : "") + '</span></div></div>' +
+    '<div class="rp-meta"><b>' + esc(rangeText(R.from, R.to)) + '</b><span>' + (R.weeks.length ? R.weeks.length + " pay week" + (R.weeks.length > 1 ? "s" : "") + ", ending " + esc(fmtDate(fridayOf(R.weeks[0]))) + " to " + esc(fmtDate(fridayOf(R.weeks[R.weeks.length - 1]))) : "No pay weeks end within these dates") + '</span><span>Created ' + esc(fmtStamp(Date.now())) + (S.emp ? " by " + esc(fullName(S.emp)) : "") + '</span></div></div>' +
     '<div class="rs-row">' + stat("Hours worked", hrs(T.worked)) + stat("Regular", hrs(T.reg)) + stat("Overtime", hrs(T.ot)) + stat("PTO used", hrs(T.pto)) + stat("Sick used", hrs(T.sick)) + stat("Holiday", hrs(T.holiday)) + stat("Total paid hours", hrs(T.total)) + '</div>' +
-    '<h2 class="rp-h">By employee</h2><table class="rp-t"><thead><tr><th>Employee</th><th class="num">Regular</th><th class="num">Overtime</th><th class="num">PTO used</th><th class="num">Sick used</th><th class="num">Holiday</th><th class="num">Total paid</th><th class="num">PTO earned</th><th class="num">Sick earned</th><th class="num">PTO left</th><th class="num">Sick left</th><th class="num">Weeks</th></tr></thead><tbody>' +
+    '<h2 class="rp-h">By employee</h2><table class="rp-t"><thead><tr><th>Employee</th><th class="num">Regular</th><th class="num">Overtime</th><th class="num">PTO used</th><th class="num">Sick used</th><th class="num">Holiday</th><th class="num">Total paid</th><th class="num">PTO earned</th><th class="num">Sick earned</th><th class="num">PTO balance</th><th class="num">Sick balance</th><th class="num">Weeks</th></tr></thead><tbody>' +
     R.people.map(p => '<tr><td><b>' + esc(fullName(p.emp)) + '</b><div class="rp-sub">' + esc(p.emp.position || "") + (p.emp.active === false ? " (inactive)" : "") + '</div></td><td class="num">' + hrs(p.reg) + '</td><td class="num">' + hrs(p.ot) + '</td><td class="num">' + hrs(p.pto) + '</td><td class="num">' + hrs(p.sick) + '</td><td class="num">' + hrs(p.holiday) + '</td><td class="num"><b>' + hrs(p.total) + '</b></td><td class="num">' + hrs(p.ptoEarned) + '</td><td class="num">' + hrs(p.sickEarned) + '</td><td class="num">' + hrs(p.ptoLeft) + '</td><td class="num">' + hrs(p.sickLeft) + '</td><td class="num">' + p.weeksWorked + '</td></tr>').join("") +
     '</tbody><tfoot><tr><td>All ' + n + ' employee' + (n === 1 ? "" : "s") + '</td><td class="num">' + hrs(T.reg) + '</td><td class="num">' + hrs(T.ot) + '</td><td class="num">' + hrs(T.pto) + '</td><td class="num">' + hrs(T.sick) + '</td><td class="num">' + hrs(T.holiday) + '</td><td class="num">' + hrs(T.total) + '</td><td class="num">' + hrs(T.ptoEarned) + '</td><td class="num">' + hrs(T.sickEarned) + '</td><td></td><td></td><td></td></tr></tfoot></table>' +
     (mkeys.length > 1 ? '<h2 class="rp-h">By month</h2><table class="rp-t"><thead><tr><th>Month</th><th class="num">Regular</th><th class="num">Overtime</th><th class="num">PTO</th><th class="num">Sick</th><th class="num">Holiday</th><th class="num">Total paid</th></tr></thead><tbody>' +
       mkeys.map(k => { const m = R.months[k]; return '<tr><td>' + esc(monthName(k)) + '</td><td class="num">' + hrs(m.reg) + '</td><td class="num">' + hrs(m.ot) + '</td><td class="num">' + hrs(m.pto) + '</td><td class="num">' + hrs(m.sick) + '</td><td class="num">' + hrs(m.holiday) + '</td><td class="num"><b>' + hrs(m.total) + '</b></td></tr>'; }).join("") + '</tbody></table>' : "");
   const review = [];
-  if (R.unlocked.length) review.push(R.unlocked.length + " week" + (R.unlocked.length > 1 ? "s" : "") + " with no payroll done: " + R.unlocked.map(wk => fmtDate(fridayOf(wk))).join(", ") + ".");
+  if (R.unlocked.length) review.push(R.unlocked.length + " week" + (R.unlocked.length > 1 ? "s" : "") + " with payroll not completed: " + R.unlocked.map(wk => fmtDate(fridayOf(wk))).join(", ") + ".");
   R.people.forEach(p => {
-    if (p.otUnapproved) review.push(fullName(p.emp) + ": " + hrs(p.otUnapproved) + " h overtime not approved.");
-    if (p.missed) review.push(fullName(p.emp) + ": " + p.missed + " missed punch" + (p.missed > 1 ? "es" : "") + " not fixed.");
+    if (p.otUnapproved) review.push(fullName(p.emp) + ": " + hrs(p.otUnapproved) + " h of overtime not approved.");
+    if (p.missed) review.push(fullName(p.emp) + ": " + p.missed + " missed punch" + (p.missed > 1 ? "es" : "") + " not corrected.");
     if (p.unconfirmed) review.push(fullName(p.emp) + ": " + p.unconfirmed + " week" + (p.unconfirmed > 1 ? "s" : "") + " not confirmed by the employee.");
   });
-  h += '<h2 class="rp-h">Good to know</h2><ul class="rp-notes">' + (review.length ? review.map(x => '<li>' + esc(x) + '</li>').join("") : '<li>Every week has payroll done, is confirmed and has no missed punches.</li>') +
-    '<li>Pay weeks run Monday to Sunday and count toward the dates by their week-ending Friday, the same way payroll does. Overtime is hours worked over ' + OT_LIMIT + ' in a pay week.</li></ul></section>';
+  h += '<h2 class="rp-h">Notes</h2><ul class="rp-notes">' + (review.length ? review.map(x => '<li>' + esc(x) + '</li>').join("") : '<li>Payroll was completed and confirmed for every week, with no missed punches.</li>') +
+    '<li>Each pay week is counted by its week-ending Friday, the same way payroll is. Overtime is hours worked over ' + OT_LIMIT + ' in a pay week.</li></ul></section>';
   if (detail) for (const p of R.people) {
     h += '<section class="rp-page rp-break"><div class="rp-head small"><div><h1>' + esc(fullName(p.emp)) + '</h1><p>' + esc(p.emp.position || "") + ' · ' + esc(rangeText(R.from, R.to)) + '</p></div></div>' +
-      '<div class="rs-row">' + stat("Regular", hrs(p.reg)) + stat("Overtime", hrs(p.ot)) + stat("PTO used", hrs(p.pto)) + stat("Sick used", hrs(p.sick)) + stat("Holiday", hrs(p.holiday)) + stat("Total paid", hrs(p.total)) + stat("PTO left", hrs(p.ptoLeft)) + stat("Sick left", hrs(p.sickLeft)) + '</div>';
-    if (p.ledger.length) h += '<h2 class="rp-h">PTO and sick balance changes</h2><table class="rp-t"><thead><tr><th>Date</th><th>Kind</th><th class="num">Hours</th><th>Why</th></tr></thead><tbody>' +
+      '<div class="rs-row">' + stat("Regular", hrs(p.reg)) + stat("Overtime", hrs(p.ot)) + stat("PTO used", hrs(p.pto)) + stat("Sick used", hrs(p.sick)) + stat("Holiday", hrs(p.holiday)) + stat("Total paid", hrs(p.total)) + stat("PTO balance", hrs(p.ptoLeft)) + stat("Sick balance", hrs(p.sickLeft)) + '</div>';
+    if (p.ledger.length) h += '<h2 class="rp-h">PTO and sick leave balance changes</h2><table class="rp-t"><thead><tr><th>Date</th><th>Type</th><th class="num">Hours</th><th>Reason</th></tr></thead><tbody>' +
       p.ledger.map(x => '<tr><td>' + esc(fmtDate(dayKey(x.t))) + '</td><td>' + (x.cat === "pto" ? "PTO" : "Sick") + '</td><td class="num">' + (x.hours > 0 ? "+" : "") + hrs(x.hours) + '</td><td>' + esc(x.note || "") + '</td></tr>').join("") + '</tbody></table>';
     const worked = p.ws.filter(w => w.total > 0 || w.punches.length);
-    if (!worked.length) h += '<p class="rp-sub">No hours in these dates.</p>';
+    if (!worked.length) h += '<p class="rp-sub">No hours within these dates.</p>';
     for (const w of worked) {
-      h += '<div class="rp-week"><h3>' + esc(weekLabel(w.wk)) + (R.metas[w.wk].locked ? " · paid" : "") + '</h3><table class="rp-t"><thead><tr><th>Day</th><th>Time in – time out</th><th class="num">Worked</th><th class="num">PTO</th><th class="num">Sick</th><th class="num">Holiday</th><th>Notes</th></tr></thead><tbody>' +
+      h += '<div class="rp-week"><h3>' + esc(weekLabel(w.wk)) + (R.metas[w.wk].locked ? " · Paid" : "") + '</h3><table class="rp-t"><thead><tr><th>Day</th><th>Time in – time out</th><th class="num">Worked</th><th class="num">PTO</th><th class="num">Sick</th><th class="num">Holiday</th><th>Notes</th></tr></thead><tbody>' +
         w.days.map((d, i) => {
           if (i >= 5 && !d.pairs.length && !d.entries.length) return "";
-          const pairs = d.pairs.map(pr => (pr.in ? fmtTime(pr.in.at) : "—") + " – " + (pr.out ? fmtTime(pr.out.at) : pr.live ? "still in" : "—")).join(", ");
+          const pairs = d.pairs.map(pr => (pr.in ? fmtTime(pr.in.at) : "—") + " – " + (pr.out ? fmtTime(pr.out.at) : pr.live ? "clocked in" : "—")).join(", ");
           const c = (k) => d.entries.filter(x => x.cat === k).reduce((a, x) => a + x.hours, 0);
           const notes = [d.issues.length ? "Missed punch" : "", d.entries.filter(x => x.note && x.cat !== "worked").map(x => x.note).join(", ")].filter(Boolean).join("; ");
           return '<tr><td>' + esc(fmtDay(d.key)) + '</td><td>' + esc(pairs || "—") + '</td><td class="num">' + (d.worked ? hrs(d.worked) : "") + '</td><td class="num">' + (c("pto") ? hrs(c("pto")) : "") + '</td><td class="num">' + (c("sick") ? hrs(c("sick")) : "") + '</td><td class="num">' + (c("holiday") ? hrs(c("holiday")) : "") + '</td><td>' + esc(notes) + '</td></tr>';
-        }).join("") + '</tbody><tfoot><tr><td colspan="2">Regular ' + hrs(w.reg) + ' · Overtime ' + hrs(w.ot) + (w.ot ? (w.otStatus === "approved" ? " (approved)" : " (not approved)") : "") + '</td><td class="num">' + hrs(w.worked) + '</td><td class="num">' + hrs(w.pto) + '</td><td class="num">' + hrs(w.sick) + '</td><td class="num">' + hrs(w.holiday) + '</td><td><b>' + hrs(w.total) + ' paid</b></td></tr></tfoot></table></div>';
+        }).join("") + '</tbody><tfoot><tr><td colspan="2">Regular ' + hrs(w.reg) + ' · Overtime ' + hrs(w.ot) + (w.ot ? (w.otStatus === "approved" ? " (approved)" : " (pending approval)") : "") + '</td><td class="num">' + hrs(w.worked) + '</td><td class="num">' + hrs(w.pto) + '</td><td class="num">' + hrs(w.sick) + '</td><td class="num">' + hrs(w.holiday) + '</td><td><b>' + hrs(w.total) + ' paid</b></td></tr></tfoot></table></div>';
     }
     h += '</section>';
   }
   return h;
 }
 function reportCsv(R, detail) {
-  const rows = [["Masterpiece Construction Experts time card summary", rangeText(R.from, R.to)], ["Pay weeks counted by their week-ending Friday"], [],
-    ["Employee", "Position", "Regular hours", "Overtime hours", "PTO used", "Sick used", "Holiday hours", "Total paid hours", "PTO earned", "Sick earned", "PTO left", "Sick left", "Weeks with hours"]];
+  const rows = [["Masterpiece Construction Experts Time Card Summary", rangeText(R.from, R.to)], ["Pay weeks are counted by their week-ending Friday"], [],
+    ["Employee", "Position", "Regular hours", "Overtime hours", "PTO used", "Sick used", "Holiday hours", "Total paid hours", "PTO earned", "Sick earned", "PTO balance", "Sick balance", "Weeks with hours"]];
   for (const p of R.people) rows.push([fullName(p.emp), p.emp.position || "", hrs(p.reg), hrs(p.ot), hrs(p.pto), hrs(p.sick), hrs(p.holiday), hrs(p.total), hrs(p.ptoEarned), hrs(p.sickEarned), hrs(p.ptoLeft), hrs(p.sickLeft), p.weeksWorked]);
   const T = R.totals; rows.push(["All employees", "", hrs(T.reg), hrs(T.ot), hrs(T.pto), hrs(T.sick), hrs(T.holiday), hrs(T.total), hrs(T.ptoEarned), hrs(T.sickEarned)]);
   if (detail) {
@@ -2698,11 +2714,11 @@ function reportCsv(R, detail) {
 }
 async function viewReport(opts) {
   if (!S.emp || !S.emp.admin) return go("home");
-  view().innerHTML = navBar("reports") + '<div class="card"><div class="busy"><span class="spin"></span>Putting the summary together…</div></div>';
+  view().innerHTML = navBar("reports") + '<div class="card"><div class="busy"><span class="spin"></span>Preparing summary…</div></div>';
   wireNav();
   const R = await buildReport(opts);
   view().innerHTML = navBar("reports") +
-    '<div class="page-head no-print"><button class="btn btn-text" type="button" id="back">← Reports</button><div class="row"><button class="btn btn-secondary" type="button" id="rcsv">Download spreadsheet</button><button class="btn btn-primary" type="button" id="rprint">Print</button></div></div>' +
+    '<div class="page-head no-print"><button class="btn btn-text" type="button" id="back">← Back to Reports</button><div class="row"><button class="btn btn-secondary" type="button" id="rcsv">Download spreadsheet</button><button class="btn btn-primary" type="button" id="rprint">Print</button></div></div>' +
     '<div class="card report">' + reportHtml(R, opts.detail) + '</div>';
   wireNav();
   $("#back").addEventListener("click", () => go("manage", { tab: "reports", last: opts }));
